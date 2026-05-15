@@ -1,4 +1,8 @@
 import { createServiceClient } from "../_shared/supabase.ts";
+import {
+  getMarketSessionStatus,
+  marketClosedResponse,
+} from "../_shared/market-hours.ts";
 
 type Instrument = {
   id: string;
@@ -9,6 +13,10 @@ type Instrument = {
 };
 
 Deno.serve(async () => {
+  if (!getMarketSessionStatus().isOpen) {
+    return marketClosedResponse();
+  }
+
   const supabase = createServiceClient();
 
   const { data: instruments, error } = await supabase
