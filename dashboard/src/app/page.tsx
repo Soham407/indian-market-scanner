@@ -1,5 +1,5 @@
-import { MarketSniperDashboard } from "@/components/market-sniper-dashboard";
+import { LandingPage } from "@/components/landing-page";
 
 export default function Home() {
-  return <MarketSniperDashboard />;
+  return <LandingPage />;
 }

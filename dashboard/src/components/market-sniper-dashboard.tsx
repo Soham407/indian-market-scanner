@@ -5,29 +5,19 @@ import {
   ArrowUpRight,
   BellRing,
   Clock3,
-  Crosshair,
   Gauge,
-  LogIn,
-  Moon,
   Receipt,
   ShieldAlert,
-  ShieldCheck,
-  Sun,
   Target,
   TrendingDown,
   TrendingUp,
   WalletCards,
   X,
 } from "lucide-react";
-import type { ReactNode } from "react";
-import { useCallback, useEffect, useMemo, useState } from "react";
-import { createBrowserClient, isSupabaseConfigured } from "@/lib/supabase/client";
+import { useCallback, useEffect, useState } from "react";
+import type { SupabaseClient } from "@supabase/supabase-js";
 import type { AlertFeedItem, ShadowTradePosition } from "@/lib/types";
-
-type AuthState = "checking" | "signed-in" | "signed-out" | "unconfigured";
-type Theme = "dark" | "light";
-
-const EMAIL_PATTERN = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+import type { ThemeClasses } from "@/lib/theme";
 
 const numberFormat = new Intl.NumberFormat("en-IN", {
   maximumFractionDigits: 2,
@@ -41,25 +31,47 @@ const currencyFormat = new Intl.NumberFormat("en-IN", {
   minimumFractionDigits: 2,
 });
 
-function getSiteUrl() {
-  if (process.env.NEXT_PUBLIC_SITE_URL) {
-    return process.env.NEXT_PUBLIC_SITE_URL;
-  }
+const percentFormat = new Intl.NumberFormat("en-IN", {
+  maximumFractionDigits: 2,
+  minimumFractionDigits: 2,
+});
 
-  if (typeof window !== "undefined") {
-    return window.location.origin;
-  }
+const FRESH_MS = 30_000;
+const AGING_MS = 120_000;
 
-  return "";
+type RrQuality = "good" | "marginal" | "poor";
+
+function classifyRr(rr: number | null): RrQuality | null {
+  if (rr === null || !Number.isFinite(rr) || rr <= 0) {
+    return null;
+  }
+  if (rr >= 2) return "good";
+  if (rr >= 1) return "marginal";
+  return "poor";
 }
 
-export function MarketSniperDashboard() {
-  const configured = isSupabaseConfigured();
-  const [authState, setAuthState] = useState<AuthState>(
-    configured ? "checking" : "unconfigured",
-  );
-  const [userId, setUserId] = useState<string | null>(null);
-  const [theme, setTheme] = useState<Theme>("dark");
+type Freshness = "fresh" | "aging" | "stale";
+
+function classifyFreshness(detectedAt: string): Freshness {
+  const parsed = new Date(detectedAt).getTime();
+  if (!Number.isFinite(parsed)) {
+    return "stale";
+  }
+  const age = Date.now() - parsed;
+  if (age <= FRESH_MS) return "fresh";
+  if (age <= AGING_MS) return "aging";
+  return "stale";
+}
+
+export function MarketSniperDashboard({
+  supabase,
+  userId,
+  ui,
+}: {
+  supabase: SupabaseClient;
+  userId: string;
+  ui: ThemeClasses;
+}) {
   const [alerts, setAlerts] = useState<AlertFeedItem[]>([]);
   const [trades, setTrades] = useState<ShadowTradePosition[]>([]);
   const [message, setMessage] = useState<string | null>(null);
@@ -69,43 +81,8 @@ export function MarketSniperDashboard() {
   const [openedAlertIds, setOpenedAlertIds] = useState<Set<string>>(
     () => new Set(),
   );
-  const [signInOpen, setSignInOpen] = useState(false);
-  const [signInEmail, setSignInEmail] = useState("");
-  const [signInError, setSignInError] = useState<string | null>(null);
-  const [signInSubmitting, setSignInSubmitting] = useState(false);
-  const supabase = useMemo(() => createBrowserClient(), []);
-  const ui = getThemeClasses(theme);
-
-  useEffect(() => {
-    queueMicrotask(() => {
-      const storedTheme = window.localStorage.getItem("market-sniper-theme");
-
-      if (storedTheme === "dark" || storedTheme === "light") {
-        setTheme(storedTheme);
-        return;
-      }
-
-      setTheme(
-        window.matchMedia("(prefers-color-scheme: light)").matches
-          ? "light"
-          : "dark",
-      );
-    });
-  }, []);
-
-  function toggleTheme() {
-    setTheme((current) => {
-      const next = current === "dark" ? "light" : "dark";
-      window.localStorage.setItem("market-sniper-theme", next);
-      return next;
-    });
-  }
 
   const refreshAlerts = useCallback(async () => {
-    if (!supabase) {
-      return;
-    }
-
     const { data, error } = await supabase
       .from("alert_feed")
       .select("*")
@@ -122,10 +99,6 @@ export function MarketSniperDashboard() {
   }, [supabase]);
 
   const refreshTrades = useCallback(async () => {
-    if (!supabase || !userId) {
-      return;
-    }
-
     const { data, error } = await supabase
       .from("shadow_trade_positions")
       .select("*")
@@ -149,57 +122,6 @@ export function MarketSniperDashboard() {
   }, [supabase, userId]);
 
   useEffect(() => {
-    if (!supabase) {
-      return;
-    }
-
-    let mounted = true;
-
-    supabase.auth.getUser().then(({ data }) => {
-      if (!mounted) {
-        return;
-      }
-      const user = data.user;
-      setUserId(user?.id ?? null);
-      setAuthState(user ? "signed-in" : "signed-out");
-      if (!user) {
-        setTrades([]);
-        setOpenedAlertIds(new Set());
-      }
-    });
-
-    const { data: authListener } = supabase.auth.onAuthStateChange(
-      (_event, session) => {
-        setUserId(session?.user.id ?? null);
-        setAuthState(session?.user ? "signed-in" : "signed-out");
-        if (!session?.user) {
-          setTrades([]);
-          setOpenedAlertIds(new Set());
-        }
-      },
-    );
-
-    return () => {
-      mounted = false;
-      authListener.subscription.unsubscribe();
-    };
-  }, [supabase]);
-
-  const openTrades = trades.filter((trade) => trade.status === "open");
-  const totalPnl = openTrades.reduce((sum, trade) => sum + trade.unrealized_pnl, 0);
-  const averageConviction =
-    alerts.length > 0
-      ? Math.round(
-          alerts.reduce((sum, alert) => sum + alert.conviction_score, 0) /
-            alerts.length,
-        )
-      : 0;
-
-  useEffect(() => {
-    if (!supabase || authState !== "signed-in") {
-      return;
-    }
-
     queueMicrotask(() => {
       void refreshAlerts();
       void refreshTrades();
@@ -214,96 +136,43 @@ export function MarketSniperDashboard() {
       )
       .subscribe();
 
-    const tradeChannel = userId
-      ? supabase
-          .channel(`market-sniper-shadow-trades-${userId}`)
-          .on(
-            "postgres_changes",
-            {
-              event: "*",
-              schema: "public",
-              table: "shadow_trades",
-              filter: `user_id=eq.${userId}`,
-            },
-            () => void refreshTrades(),
-          )
-          .subscribe()
-      : null;
+    const tradeChannel = supabase
+      .channel(`market-sniper-shadow-trades-${userId}`)
+      .on(
+        "postgres_changes",
+        {
+          event: "*",
+          schema: "public",
+          table: "shadow_trades",
+          filter: `user_id=eq.${userId}`,
+        },
+        () => void refreshTrades(),
+      )
+      .subscribe();
 
     return () => {
       void supabase.removeChannel(alertChannel);
-      if (tradeChannel) {
-        void supabase.removeChannel(tradeChannel);
-      }
+      void supabase.removeChannel(tradeChannel);
     };
-  }, [authState, refreshAlerts, refreshTrades, supabase, userId]);
+  }, [refreshAlerts, refreshTrades, supabase, userId]);
 
-  function openSignIn() {
-    if (!supabase) {
-      setAuthState("unconfigured");
-      setMessage("Supabase env vars are not configured.");
-      return;
-    }
+  const openTrades = trades.filter((trade) => trade.status === "open");
+  const totalPnl = openTrades.reduce((sum, trade) => sum + trade.unrealized_pnl, 0);
+  const averageConviction =
+    alerts.length > 0
+      ? Math.round(
+          alerts.reduce((sum, alert) => sum + alert.conviction_score, 0) /
+            alerts.length,
+        )
+      : 0;
 
-    setSignInError(null);
-    setSignInOpen(true);
-  }
-
-  function closeSignIn() {
-    if (signInSubmitting) {
-      return;
-    }
-    setSignInOpen(false);
-    setSignInError(null);
-  }
-
-  async function submitSignIn(event: React.FormEvent<HTMLFormElement>) {
-    event.preventDefault();
-
-    if (!supabase) {
-      setSignInError("Supabase env vars are not configured.");
-      return;
-    }
-
-    const email = signInEmail.trim();
-
-    if (!EMAIL_PATTERN.test(email)) {
-      setSignInError("Enter a valid email address.");
-      return;
-    }
-
-    setSignInSubmitting(true);
-    setSignInError(null);
-
-    try {
-      const { error } = await supabase.auth.signInWithOtp({
-        email,
-        options: {
-          emailRedirectTo: getSiteUrl(),
-        },
-      });
-
-      if (error) {
-        setSignInError(error.message);
-        return;
-      }
-
-      setSignInOpen(false);
-      setSignInEmail("");
-      setMessage("Magic link sent. Check your email.");
-    } finally {
-      setSignInSubmitting(false);
-    }
-  }
-
-  async function paperTrade(alert: AlertFeedItem) {
+  async function paperTrade(alert: AlertFeedItem, quantity: number) {
     if (submittingAlertIds.has(alert.id) || openedAlertIds.has(alert.id)) {
       return;
     }
 
-    if (!supabase || !userId) {
-      setMessage("Sign in required before opening a shadow trade.");
-      openSignIn();
+    if (!Number.isInteger(quantity) || quantity <= 0) {
+      setMessage("Quantity must be a positive whole number.");
       return;
     }
 
@@ -312,7 +181,7 @@ export function MarketSniperDashboard() {
     try {
       const { error } = await supabase.rpc("open_shadow_trade", {
         p_alert_id: alert.id,
-        p_quantity: 1,
+        p_quantity: quantity,
       });
 
       if (error) {
@@ -321,7 +190,7 @@ export function MarketSniperDashboard() {
       }
 
       setOpenedAlertIds((current) => new Set(current).add(alert.id));
-      setMessage(`${alert.symbol} shadow trade opened.`);
+      setMessage(`${alert.symbol} shadow trade opened (qty ${quantity}).`);
       await refreshTrades();
     } catch (error) {
       setMessage(
@@ -339,12 +208,6 @@ export function MarketSniperDashboard() {
   }
 
   async function closeTrade(trade: ShadowTradePosition) {
-    if (!supabase || !userId) {
-      setMessage("Sign in required before closing a shadow trade.");
-      openSignIn();
-      return;
-    }
-
     const { error } = await supabase.rpc("close_shadow_trade", {
       p_trade_id: trade.id,
     });
@@ -358,58 +221,16 @@ export function MarketSniperDashboard() {
   }
 
   return (
-    <main className={`min-h-screen transition-colors ${ui.page}`}>
-      <div className={`border-b ${ui.header}`}>
-        <div className="mx-auto flex max-w-7xl flex-col gap-5 px-4 py-5 sm:px-6 lg:px-8">
-          <div className="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
-            <div>
-              <div className={`flex items-center gap-3 ${ui.accentText}`}>
-                <Crosshair className="size-6" />
-                <span className="font-mono text-xs uppercase tracking-[0.28em]">
-                  Market Sniper
-                </span>
-              </div>
-              <h1 className={`mt-3 text-3xl font-semibold tracking-normal sm:text-4xl ${ui.heading}`}>
-                Institutional liquidity trap monitor
-              </h1>
-            </div>
-            <div className="flex flex-wrap items-center gap-3">
-              <button
-                className={`inline-flex h-10 items-center gap-2 rounded-md border px-3 text-sm transition ${ui.outlineButton}`}
-                onClick={toggleTheme}
-              >
-                {theme === "dark" ? <Sun className="size-4" /> : <Moon className="size-4" />}
-                {theme === "dark" ? "Light" : "Dark"}
-              </button>
-              <StatusPill
-                icon={<ShieldCheck className="size-4" />}
-                label={authLabel(authState)}
-                ui={ui}
-              />
-              {authState !== "signed-in" ? (
-                <button
-                  className={`inline-flex h-10 items-center gap-2 rounded-md px-4 text-sm font-semibold transition ${ui.primaryButton}`}
-                  onClick={openSignIn}
-                  type="button"
-                >
-                  <LogIn className="size-4" />
-                  Sign in
-                </button>
-              ) : null}
-            </div>
-          </div>
-
-          <div className="grid gap-3 md:grid-cols-3">
-            <Metric ui={ui} label="Active alerts" value={alerts.length.toString()} />
-            <Metric ui={ui} label="Avg conviction" value={`${averageConviction}%`} />
-            <Metric
-              ui={ui}
-              label="Open P&L"
-              value={currencyFormat.format(totalPnl)}
-              tone={totalPnl >= 0 ? "positive" : "negative"}
-            />
-          </div>
-        </div>
+    <>
+      <div className="mx-auto grid max-w-7xl gap-3 px-4 pb-2 pt-1 sm:px-6 md:grid-cols-3 lg:px-8">
+        <Metric ui={ui} label="Active alerts" value={alerts.length.toString()} />
+        <Metric ui={ui} label="Avg conviction" value={`${averageConviction}%`} />
+        <Metric
+          ui={ui}
+          label="Open P&L"
+          value={currencyFormat.format(totalPnl)}
+          tone={totalPnl >= 0 ? "positive" : "negative"}
+        />
       </div>
 
       <div className="mx-auto grid max-w-7xl gap-6 px-4 py-6 sm:px-6 lg:grid-cols-[minmax(0,1fr)_420px] lg:px-8">
@@ -428,18 +249,13 @@ export function MarketSniperDashboard() {
               <EmptyState
                 ui={ui}
                 title="No live alerts"
-                detail={
-                  authState === "signed-in"
-                    ? "No active Supabase alerts are available right now."
-                    : "Sign in to read the live Supabase alert feed."
-                }
+                detail="No active Supabase alerts are available right now."
               />
             ) : null}
             {alerts.map((alert) => (
               <AlertCard
                 key={alert.id}
                 alert={alert}
-                authState={authState}
                 isOpened={openedAlertIds.has(alert.id)}
                 isSubmitting={submittingAlertIds.has(alert.id)}
                 onPaperTrade={paperTrade}
@@ -462,7 +278,7 @@ export function MarketSniperDashboard() {
               <EmptyState
                 ui={ui}
                 title="No shadow trades"
-                detail="Open a trade from a live alert after signing in."
+                detail="Open a trade from a live alert."
               />
             ) : (
               trades.map((trade) => (
@@ -482,132 +298,32 @@ export function MarketSniperDashboard() {
           <X className={`size-4 ${ui.mutedText}`} />
         </button>
       ) : null}
-
-      {signInOpen ? (
-        <SignInModal
-          email={signInEmail}
-          error={signInError}
-          submitting={signInSubmitting}
-          onChange={setSignInEmail}
-          onSubmit={submitSignIn}
-          onClose={closeSignIn}
-          ui={ui}
-        />
-      ) : null}
-    </main>
-  );
-}
-
-function SignInModal({
-  email,
-  error,
-  submitting,
-  onChange,
-  onSubmit,
-  onClose,
-  ui,
-}: {
-  email: string;
-  error: string | null;
-  submitting: boolean;
-  onChange: (value: string) => void;
-  onSubmit: (event: React.FormEvent<HTMLFormElement>) => void;
-  onClose: () => void;
-  ui: ThemeClasses;
-}) {
-  return (
-    <div
-      className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4"
-      role="dialog"
-      aria-modal="true"
-      aria-labelledby="sign-in-title"
-      onClick={(event) => {
-        if (event.target === event.currentTarget) {
-          onClose();
-        }
-      }}
-    >
-      <form
-        onSubmit={onSubmit}
-        className={`w-full max-w-md rounded-lg border p-6 shadow-2xl ${ui.card}`}
-      >
-        <div className="flex items-start justify-between gap-3">
-          <div>
-            <h2 id="sign-in-title" className={`text-lg font-semibold ${ui.heading}`}>
-              Sign in to Market Sniper
-            </h2>
-            <p className={`mt-1 text-sm ${ui.secondaryText}`}>
-              We will email you a magic link to sign in.
-            </p>
-          </div>
-          <button
-            type="button"
-            onClick={onClose}
-            disabled={submitting}
-            aria-label="Close sign in"
-            className={`inline-flex size-8 items-center justify-center rounded-md border ${ui.outlineButton}`}
-          >
-            <X className="size-4" />
-          </button>
-        </div>
-
-        <label
-          htmlFor="sign-in-email"
-          className={`mt-5 block text-xs uppercase tracking-[0.18em] ${ui.mutedText}`}
-        >
-          Email address
-        </label>
-        <input
-          id="sign-in-email"
-          type="email"
-          inputMode="email"
-          autoComplete="email"
-          autoFocus
-          required
-          value={email}
-          onChange={(event) => onChange(event.target.value)}
-          disabled={submitting}
-          className={`mt-2 h-11 w-full rounded-md border px-3 font-mono text-sm outline-none focus:ring-2 focus:ring-emerald-500/40 ${ui.subtlePanel} ${ui.heading}`}
-          placeholder="you@example.com"
-        />
-
-        {error ? (
-          <p className={`mt-3 text-sm ${ui.negativeText}`} role="alert">
-            {error}
-          </p>
-        ) : null}
-
-        <button
-          type="submit"
-          disabled={submitting}
-          className={`mt-5 inline-flex h-11 w-full items-center justify-center gap-2 rounded-md text-sm font-semibold transition ${ui.primaryButton} disabled:opacity-60`}
-        >
-          <LogIn className="size-4" />
-          {submitting ? "Sending..." : "Send magic link"}
-        </button>
-      </form>
-    </div>
+    </>
   );
 }
 
 function AlertCard({
   alert,
-  authState,
   isOpened,
   isSubmitting,
   onPaperTrade,
   ui,
 }: {
   alert: AlertFeedItem;
-  authState: AuthState;
   isOpened: boolean;
   isSubmitting: boolean;
-  onPaperTrade: (alert: AlertFeedItem) => void;
+  onPaperTrade: (alert: AlertFeedItem, quantity: number) => void;
   ui: ThemeClasses;
 }) {
   const bearish = alert.direction === "bearish";
-  const requiresAuth = authState !== "signed-in";
-  const isDisabled = isSubmitting || isOpened || authState === "checking";
+  const [quantity, setQuantity] = useState(1);
+  const freshness = classifyFreshness(alert.detected_at);
+  const freshnessClass =
+    freshness === "fresh"
+      ? ui.freshnessFresh
+      : freshness === "aging"
+        ? ui.freshnessAging
+        : ui.freshnessStale;
 
   return (
     <article className={`rounded-lg border p-4 shadow-2xl ${ui.card}`}>
@@ -619,9 +335,7 @@ function AlertCard({
             </span>
             <span
               className={`inline-flex items-center gap-1 rounded px-2 py-1 text-xs font-medium ${
-                bearish
-                  ? ui.bearishPill
-                  : ui.bullishPill
+                bearish ? ui.bearishPill : ui.bullishPill
               }`}
             >
               {bearish ? (
@@ -631,9 +345,10 @@ function AlertCard({
               )}
               {alert.direction.toUpperCase()}
             </span>
-            <span className={`inline-flex items-center gap-1 text-xs ${ui.mutedText}`}>
+            <span className={`inline-flex items-center gap-1 text-xs ${freshnessClass}`}>
               <Clock3 className="size-3.5" />
               {relativeTime(alert.detected_at)}
+              {freshness === "stale" ? " · stale" : null}
             </span>
           </div>
           <h3 className={`mt-3 text-xl font-semibold ${ui.heading}`}>{alert.title}</h3>
@@ -669,31 +384,38 @@ function AlertCard({
         ))}
       </div>
 
-      <ExecutionPlan alert={alert} ui={ui} />
+      <ExecutionPlan
+        alert={alert}
+        quantity={quantity}
+        onQuantityChange={setQuantity}
+        ui={ui}
+      />
 
       <button
         className={`mt-3 inline-flex h-11 w-full items-center justify-center gap-2 rounded-md text-sm font-semibold transition ${
-          isOpened
-            ? ui.successButton
-            : requiresAuth
-            ? ui.outlineButton
-            : ui.paperTradeButton
+          isOpened ? ui.successButton : ui.paperTradeButton
         }`}
-        disabled={isDisabled}
-        onClick={() => onPaperTrade(alert)}
+        disabled={isSubmitting || isOpened}
+        onClick={() => onPaperTrade(alert, quantity)}
       >
-        {requiresAuth && !isOpened ? (
-          <LogIn className="size-4" />
-        ) : (
-          <Target className="size-4" />
-        )}
-        {buttonLabel(authState, isSubmitting, isOpened)}
+        <Target className="size-4" />
+        {isOpened ? "Trade Open" : isSubmitting ? "Opening..." : `Paper Trade (qty ${quantity})`}
       </button>
     </article>
   );
 }
 
-function ExecutionPlan({ alert, ui }: { alert: AlertFeedItem; ui: ThemeClasses }) {
+function ExecutionPlan({
+  alert,
+  quantity,
+  onQuantityChange,
+  ui,
+}: {
+  alert: AlertFeedItem;
+  quantity: number;
+  onQuantityChange: (next: number) => void;
+  ui: ThemeClasses;
+}) {
   const bearish = alert.direction === "bearish";
   const entry = alert.current_price;
   const vwap = alert.vwap;
@@ -706,14 +428,33 @@ function ExecutionPlan({ alert, ui }: { alert: AlertFeedItem; ui: ThemeClasses }
   const riskMargin = bearish ? stopLoss - entry : entry - stopLoss;
   const rrRatio =
     profitMargin !== null && riskMargin > 0 ? profitMargin / riskMargin : null;
+  const rrQuality = classifyRr(rrRatio);
+
+  const tpPercent =
+    vwap !== null && entry > 0 ? ((bearish ? entry - vwap : vwap - entry) / entry) * 100 : null;
+  const slPercent = entry > 0 ? ((bearish ? stopLoss - entry : entry - stopLoss) / entry) * 100 : null;
+
+  const totalRisk = riskMargin > 0 ? riskMargin * quantity : null;
+  const totalReward = profitMargin !== null && profitMargin > 0 ? profitMargin * quantity : null;
 
   const actionLabel = bearish ? "SHORT ENTRY" : "LONG ENTRY";
   const actionPill = bearish ? ui.shortPill : ui.longPill;
   const ActionIcon = bearish ? TrendingDown : TrendingUp;
 
+  const qualityChip =
+    rrQuality === "good"
+      ? { className: ui.qualityGood, label: "GOOD" }
+      : rrQuality === "marginal"
+        ? { className: ui.qualityMarginal, label: "MARGINAL" }
+        : rrQuality === "poor"
+          ? { className: ui.qualityPoor, label: "POOR" }
+          : null;
+
   return (
     <section className={`mt-5 rounded-md border-2 ${ui.executionPlan}`}>
-      <header className={`flex items-center justify-between border-b px-4 py-2 ${ui.executionPlanHeader}`}>
+      <header
+        className={`flex items-center justify-between border-b px-4 py-2 ${ui.executionPlanHeader}`}
+      >
         <div className="flex items-center gap-2">
           <Receipt className="size-4" />
           <span className="font-mono text-xs uppercase tracking-[0.22em]">
@@ -755,18 +496,21 @@ function ExecutionPlan({ alert, ui }: { alert: AlertFeedItem; ui: ThemeClasses }
               <div className={`mt-2 font-mono text-lg font-semibold ${ui.mutedText}`}>
                 VWAP n/a
               </div>
-              <div className={`mt-1 text-xs ${ui.mutedText}`}>
-                Awaiting fresh VWAP
-              </div>
+              <div className={`mt-1 text-xs ${ui.mutedText}`}>Awaiting fresh VWAP</div>
             </>
           ) : (
             <>
               <div className={`mt-2 font-mono text-lg font-semibold ${ui.positiveText}`}>
                 {currencyFormat.format(vwap)}
               </div>
-              <div className={`mt-1 text-xs ${ui.positiveText}`}>
-                {profitMargin !== null && profitMargin >= 0 ? "+" : ""}
-                {profitMargin !== null ? numberFormat.format(profitMargin) : "—"} expected margin
+              <div className={`mt-1 flex items-center justify-between text-xs ${ui.positiveText}`}>
+                <span>
+                  {profitMargin !== null && profitMargin >= 0 ? "+" : ""}
+                  {profitMargin !== null ? numberFormat.format(profitMargin) : "—"} pts
+                </span>
+                <span className="font-mono">
+                  {tpPercent !== null ? `${tpPercent >= 0 ? "+" : ""}${percentFormat.format(tpPercent)}%` : "—"}
+                </span>
               </div>
             </>
           )}
@@ -782,21 +526,73 @@ function ExecutionPlan({ alert, ui }: { alert: AlertFeedItem; ui: ThemeClasses }
           <div className={`mt-2 font-mono text-lg font-semibold ${ui.negativeText}`}>
             {currencyFormat.format(stopLoss)}
           </div>
-          <div className={`mt-1 text-xs ${ui.negativeText}`}>
-            −{numberFormat.format(Math.abs(riskMargin))} risk (0.15% buffer)
+          <div className={`mt-1 flex items-center justify-between text-xs ${ui.negativeText}`}>
+            <span>−{numberFormat.format(Math.abs(riskMargin))} pts</span>
+            <span className="font-mono">
+              {slPercent !== null ? `−${percentFormat.format(Math.abs(slPercent))}%` : "—"}
+            </span>
+          </div>
+          <div className={`mt-1 text-[10px] uppercase tracking-[0.14em] ${ui.mutedText}`}>
+            0.15% trigger buffer
           </div>
         </div>
       </div>
 
-      <footer className={`flex items-center justify-between border-t px-4 py-2 ${ui.executionPlanHeader}`}>
+      <div className={`grid gap-3 border-t px-4 py-3 sm:grid-cols-[auto_1fr_1fr] ${ui.executionPlanHeader}`}>
+        <label className="flex items-center gap-2">
+          <span className={`font-mono text-[10px] uppercase tracking-[0.2em] ${ui.mutedText}`}>
+            Qty
+          </span>
+          <input
+            type="number"
+            min={1}
+            step={1}
+            value={quantity}
+            onChange={(event) => {
+              const next = Number.parseInt(event.target.value, 10);
+              onQuantityChange(Number.isFinite(next) && next > 0 ? next : 1);
+            }}
+            className={`h-8 w-20 rounded-md border px-2 font-mono text-sm outline-none focus:ring-2 ${ui.qtyInput}`}
+          />
+        </label>
+        <div className="flex flex-col gap-0.5">
+          <span className={`font-mono text-[10px] uppercase tracking-[0.18em] ${ui.mutedText}`}>
+            Total Risk
+          </span>
+          <span className={`font-mono text-sm font-semibold ${ui.negativeText}`}>
+            {totalRisk !== null ? `−${currencyFormat.format(totalRisk)}` : "—"}
+          </span>
+        </div>
+        <div className="flex flex-col gap-0.5">
+          <span className={`font-mono text-[10px] uppercase tracking-[0.18em] ${ui.mutedText}`}>
+            Total Reward
+          </span>
+          <span className={`font-mono text-sm font-semibold ${ui.positiveText}`}>
+            {totalReward !== null ? `+${currencyFormat.format(totalReward)}` : "—"}
+          </span>
+        </div>
+      </div>
+
+      <footer
+        className={`flex items-center justify-between border-t px-4 py-2 ${ui.executionPlanHeader}`}
+      >
         <span className={`font-mono text-[10px] uppercase tracking-[0.2em] ${ui.mutedText}`}>
           Risk : Reward
         </span>
-        <span className={`font-mono text-sm font-semibold ${ui.accentText}`}>
-          {rrRatio !== null && Number.isFinite(rrRatio)
-            ? `${numberFormat.format(rrRatio)} : 1`
-            : "—"}
-        </span>
+        <div className="flex items-center gap-2">
+          <span className={`font-mono text-sm font-semibold ${ui.accentText}`}>
+            {rrRatio !== null && Number.isFinite(rrRatio)
+              ? `${numberFormat.format(rrRatio)} : 1`
+              : "—"}
+          </span>
+          {qualityChip ? (
+            <span
+              className={`inline-flex items-center rounded border px-2 py-0.5 text-[10px] font-bold tracking-[0.18em] ${qualityChip.className}`}
+            >
+              {qualityChip.label}
+            </span>
+          ) : null}
+        </div>
       </footer>
     </section>
   );
@@ -804,11 +600,13 @@ function ExecutionPlan({ alert, ui }: { alert: AlertFeedItem; ui: ThemeClasses }
 
 function Conviction({ score, ui }: { score: number; ui: ThemeClasses }) {
   return (
-    <div className={`grid size-20 place-items-center rounded-lg border ${ui.convictionBox}`}>
+    <div className={`grid size-14 place-items-center rounded-lg border ${ui.convictionBox}`}>
       <div className="text-center">
-        <div className={`font-mono text-2xl font-semibold ${ui.accentText}`}>{score}%</div>
-        <div className={`mt-1 flex items-center justify-center gap-1 text-[10px] uppercase tracking-[0.16em] ${ui.mutedText}`}>
-          <Gauge className="size-3" />
+        <div className={`font-mono text-base font-semibold ${ui.accentText}`}>{score}%</div>
+        <div
+          className={`mt-0.5 flex items-center justify-center gap-1 text-[9px] uppercase tracking-[0.14em] ${ui.mutedText}`}
+        >
+          <Gauge className="size-2.5" />
           Score
         </div>
       </div>
@@ -901,23 +699,6 @@ function DataTile({ ui, label, value }: { ui: ThemeClasses; label: string; value
   );
 }
 
-function StatusPill({
-  icon,
-  label,
-  ui,
-}: {
-  icon: ReactNode;
-  label: string;
-  ui: ThemeClasses;
-}) {
-  return (
-    <div className={`inline-flex h-10 items-center gap-2 rounded-md border px-3 text-sm ${ui.outlineButton}`}>
-      {icon}
-      {label}
-    </div>
-  );
-}
-
 function EmptyState({
   ui,
   title,
@@ -933,46 +714,6 @@ function EmptyState({
       <div className={`mt-1 text-sm ${ui.secondaryText}`}>{detail}</div>
     </div>
   );
-}
-
-function authLabel(authState: AuthState) {
-  if (authState === "signed-in") {
-    return "RLS active";
-  }
-
-  if (authState === "unconfigured") {
-    return "Supabase not configured";
-  }
-
-  if (authState === "checking") {
-    return "Checking auth";
-  }
-
-  return "Sign in required";
-}
-
-function buttonLabel(
-  authState: AuthState,
-  isSubmitting: boolean,
-  isOpened: boolean,
-) {
-  if (isOpened) {
-    return "Trade Open";
-  }
-
-  if (isSubmitting) {
-    return "Opening...";
-  }
-
-  if (authState === "checking") {
-    return "Checking Auth";
-  }
-
-  if (authState !== "signed-in") {
-    return "Sign In to Trade";
-  }
-
-  return "Paper Trade";
 }
 
 function relativeTime(timestamp: string) {
@@ -1000,64 +741,4 @@ function relativeTime(timestamp: string) {
 
   const days = Math.round(hours / 24);
   return `${days}d ago`;
-}
-
-type ThemeClasses = ReturnType<typeof getThemeClasses>;
-
-function getThemeClasses(theme: Theme) {
-  if (theme === "light") {
-    return {
-      page: "bg-[#f4f7ef] text-[#11170f]",
-      header: "border-stone-300 bg-[#fbfcf7]/95",
-      card: "border-stone-300 bg-white text-[#11170f] shadow-black/5",
-      subtlePanel: "border-stone-200 bg-[#f5f7ef]",
-      toast: "border-stone-300 bg-white text-[#11170f]",
-      heading: "text-[#11170f]",
-      secondaryText: "text-stone-600",
-      mutedText: "text-stone-500",
-      accentText: "text-emerald-700",
-      primaryButton: "bg-[#11170f] text-white hover:bg-emerald-900",
-      paperTradeButton: "bg-[#11170f] text-white hover:bg-emerald-900",
-      outlineButton:
-        "border-stone-300 bg-white text-stone-700 hover:border-emerald-700 hover:text-emerald-800",
-      successButton: "border border-emerald-700/30 bg-emerald-100 text-emerald-800",
-      symbolPill: "border-emerald-700/30 text-emerald-800",
-      convictionBox: "border-emerald-700/30 bg-emerald-50",
-      bullishPill: "bg-emerald-100 text-emerald-800",
-      bearishPill: "bg-red-100 text-red-800",
-      positiveText: "text-emerald-700",
-      negativeText: "text-red-700",
-      shortPill: "bg-red-600 text-white shadow-sm",
-      longPill: "bg-emerald-600 text-white shadow-sm",
-      executionPlan: "border-emerald-700/40 bg-[#fbfcf7]",
-      executionPlanHeader: "border-emerald-700/20 bg-emerald-50 text-emerald-900",
-    };
-  }
-
-  return {
-    page: "bg-[#070907] text-stone-100",
-    header: "border-lime-300/10 bg-[#0b0f0b]/95",
-    card: "border-stone-800 bg-[#0d120d] text-stone-100 shadow-black/20",
-    subtlePanel: "border-stone-800 bg-black/20",
-    toast: "border-stone-700 bg-[#101510] text-stone-200",
-    heading: "text-stone-50",
-    secondaryText: "text-stone-400",
-    mutedText: "text-stone-500",
-    accentText: "text-lime-300",
-    primaryButton: "bg-lime-300 text-[#10140f] hover:bg-lime-200",
-    paperTradeButton: "bg-stone-100 text-[#10140f] hover:bg-lime-200",
-    outlineButton:
-      "border-stone-700 bg-stone-900 text-stone-300 hover:border-lime-300/50 hover:text-lime-200",
-    successButton: "border border-emerald-300/30 bg-emerald-300/10 text-emerald-200",
-    symbolPill: "border-lime-300/30 text-lime-200",
-    convictionBox: "border-lime-300/30 bg-lime-300/5",
-    bullishPill: "bg-emerald-400/10 text-emerald-300",
-    bearishPill: "bg-red-400/10 text-red-300",
-    positiveText: "text-emerald-300",
-    negativeText: "text-red-300",
-    shortPill: "bg-red-500 text-white shadow-md shadow-red-500/30",
-    longPill: "bg-emerald-500 text-[#10140f] shadow-md shadow-emerald-500/30",
-    executionPlan: "border-lime-300/30 bg-[#0a0f0a]",
-    executionPlanHeader: "border-lime-300/20 bg-lime-300/5 text-lime-200",
-  };
 }

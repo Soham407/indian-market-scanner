@@ -1,0 +1,496 @@
+"use client";
+
+import {
+  Activity,
+  Crosshair,
+  LineChart,
+  LogIn,
+  LogOut,
+  Moon,
+  ShieldCheck,
+  Sun,
+  Target,
+  WalletCards,
+  X,
+} from "lucide-react";
+import type { ReactNode } from "react";
+import { useEffect, useMemo, useState } from "react";
+import { createBrowserClient, isSupabaseConfigured } from "@/lib/supabase/client";
+import { getThemeClasses, type Theme, type ThemeClasses } from "@/lib/theme";
+import { MarketSniperDashboard } from "./market-sniper-dashboard";
+
+type AuthState = "checking" | "signed-in" | "signed-out" | "unconfigured";
+
+const EMAIL_PATTERN = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+
+function getSiteUrl() {
+  if (process.env.NEXT_PUBLIC_SITE_URL) {
+    return process.env.NEXT_PUBLIC_SITE_URL;
+  }
+
+  if (typeof window !== "undefined") {
+    return window.location.origin;
+  }
+
+  return "";
+}
+
+export function LandingPage() {
+  const configured = isSupabaseConfigured();
+  const [authState, setAuthState] = useState<AuthState>(
+    configured ? "checking" : "unconfigured",
+  );
+  const [userId, setUserId] = useState<string | null>(null);
+  const [theme, setTheme] = useState<Theme>("dark");
+  const [signInOpen, setSignInOpen] = useState(false);
+  const [signInEmail, setSignInEmail] = useState("");
+  const [signInError, setSignInError] = useState<string | null>(null);
+  const [signInSubmitting, setSignInSubmitting] = useState(false);
+  const [notice, setNotice] = useState<string | null>(null);
+  const supabase = useMemo(() => createBrowserClient(), []);
+  const ui = getThemeClasses(theme);
+
+  useEffect(() => {
+    queueMicrotask(() => {
+      const storedTheme = window.localStorage.getItem("market-sniper-theme");
+      if (storedTheme === "dark" || storedTheme === "light") {
+        setTheme(storedTheme);
+        return;
+      }
+      setTheme(
+        window.matchMedia("(prefers-color-scheme: light)").matches ? "light" : "dark",
+      );
+    });
+  }, []);
+
+  function toggleTheme() {
+    setTheme((current) => {
+      const next = current === "dark" ? "light" : "dark";
+      window.localStorage.setItem("market-sniper-theme", next);
+      return next;
+    });
+  }
+
+  useEffect(() => {
+    if (!supabase) {
+      return;
+    }
+
+    let mounted = true;
+
+    supabase.auth.getUser().then(({ data }) => {
+      if (!mounted) {
+        return;
+      }
+      const user = data.user;
+      setUserId(user?.id ?? null);
+      setAuthState(user ? "signed-in" : "signed-out");
+    });
+
+    const { data: authListener } = supabase.auth.onAuthStateChange(
+      (_event, session) => {
+        setUserId(session?.user.id ?? null);
+        setAuthState(session?.user ? "signed-in" : "signed-out");
+      },
+    );
+
+    return () => {
+      mounted = false;
+      authListener.subscription.unsubscribe();
+    };
+  }, [supabase]);
+
+  function openSignIn() {
+    if (!supabase) {
+      setAuthState("unconfigured");
+      setNotice("Supabase env vars are not configured.");
+      return;
+    }
+    setSignInError(null);
+    setSignInOpen(true);
+  }
+
+  function closeSignIn() {
+    if (signInSubmitting) {
+      return;
+    }
+    setSignInOpen(false);
+    setSignInError(null);
+  }
+
+  async function submitSignIn(event: React.FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (!supabase) {
+      setSignInError("Supabase env vars are not configured.");
+      return;
+    }
+
+    const email = signInEmail.trim();
+    if (!EMAIL_PATTERN.test(email)) {
+      setSignInError("Enter a valid email address.");
+      return;
+    }
+
+    setSignInSubmitting(true);
+    setSignInError(null);
+
+    try {
+      const { error } = await supabase.auth.signInWithOtp({
+        email,
+        options: { emailRedirectTo: getSiteUrl() },
+      });
+
+      if (error) {
+        setSignInError(error.message);
+        return;
+      }
+
+      setSignInOpen(false);
+      setSignInEmail("");
+      setNotice("Magic link sent. Check your email.");
+    } finally {
+      setSignInSubmitting(false);
+    }
+  }
+
+  async function signOut() {
+    if (!supabase) {
+      return;
+    }
+    const { error } = await supabase.auth.signOut();
+    if (error) {
+      setNotice(`Sign out failed: ${error.message}`);
+      return;
+    }
+    setNotice("Signed out.");
+  }
+
+  const isSignedIn = authState === "signed-in" && userId !== null;
+
+  return (
+    <main className={`min-h-screen transition-colors ${ui.page}`}>
+      <div className={`border-b ${ui.header}`}>
+        <div className="mx-auto flex max-w-7xl flex-col gap-5 px-4 py-5 sm:px-6 lg:px-8">
+          <div className="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
+            <div>
+              <div className={`flex items-center gap-3 ${ui.accentText}`}>
+                <Crosshair className="size-6" />
+                <span className="font-mono text-xs uppercase tracking-[0.28em]">
+                  Market Sniper
+                </span>
+              </div>
+              <h1
+                className={`mt-3 text-3xl font-semibold tracking-normal sm:text-4xl ${ui.heading}`}
+              >
+                Institutional liquidity trap monitor
+              </h1>
+            </div>
+            <div className="flex flex-wrap items-center gap-3">
+              <button
+                className={`inline-flex h-10 items-center gap-2 rounded-md border px-3 text-sm transition ${ui.outlineButton}`}
+                onClick={toggleTheme}
+              >
+                {theme === "dark" ? <Sun className="size-4" /> : <Moon className="size-4" />}
+                {theme === "dark" ? "Light" : "Dark"}
+              </button>
+              <StatusPill
+                icon={<ShieldCheck className="size-4" />}
+                label={authLabel(authState)}
+                ui={ui}
+              />
+              {isSignedIn ? (
+                <button
+                  className={`inline-flex h-10 items-center gap-2 rounded-md border px-4 text-sm font-semibold transition ${ui.outlineButton}`}
+                  onClick={signOut}
+                  type="button"
+                >
+                  <LogOut className="size-4" />
+                  Sign out
+                </button>
+              ) : (
+                <button
+                  className={`inline-flex h-10 items-center gap-2 rounded-md px-4 text-sm font-semibold transition ${ui.primaryButton}`}
+                  onClick={openSignIn}
+                  type="button"
+                >
+                  <LogIn className="size-4" />
+                  Sign in
+                </button>
+              )}
+            </div>
+          </div>
+        </div>
+      </div>
+
+      {isSignedIn && supabase ? (
+        <MarketSniperDashboard supabase={supabase} userId={userId} ui={ui} />
+      ) : (
+        <LandingHero ui={ui} authState={authState} onSignIn={openSignIn} />
+      )}
+
+      {notice ? (
+        <button
+          className={`fixed bottom-4 left-1/2 flex max-w-[calc(100vw-2rem)] -translate-x-1/2 items-center gap-3 rounded-md border px-4 py-3 text-left text-sm shadow-2xl ${ui.toast}`}
+          onClick={() => setNotice(null)}
+        >
+          <span>{notice}</span>
+          <X className={`size-4 ${ui.mutedText}`} />
+        </button>
+      ) : null}
+
+      {signInOpen ? (
+        <SignInModal
+          email={signInEmail}
+          error={signInError}
+          submitting={signInSubmitting}
+          onChange={setSignInEmail}
+          onSubmit={submitSignIn}
+          onClose={closeSignIn}
+          ui={ui}
+        />
+      ) : null}
+    </main>
+  );
+}
+
+function LandingHero({
+  ui,
+  authState,
+  onSignIn,
+}: {
+  ui: ThemeClasses;
+  authState: AuthState;
+  onSignIn: () => void;
+}) {
+  return (
+    <div className="mx-auto max-w-7xl px-4 py-12 sm:px-6 sm:py-16 lg:px-8 lg:py-20">
+      <div className="grid gap-10 lg:grid-cols-[minmax(0,1fr)_minmax(0,420px)] lg:items-center">
+        <div>
+          <span
+            className={`inline-flex items-center gap-2 rounded-full border px-3 py-1 font-mono text-[10px] uppercase tracking-[0.24em] ${ui.symbolPill}`}
+          >
+            <Activity className="size-3" />
+            NSE · Live order ticket
+          </span>
+          <h2
+            className={`mt-6 text-3xl font-semibold leading-tight tracking-tight sm:text-4xl lg:text-5xl ${ui.heading}`}
+          >
+            Catch institutional liquidity traps
+            <span className={`block ${ui.accentText}`}>before the reset.</span>
+          </h2>
+          <p className={`mt-5 max-w-xl text-base leading-7 ${ui.secondaryText}`}>
+            Market Sniper watches NSE intraday for previous-day-high sweeps that
+            stall extended from VWAP — the moments fast money fades into
+            institutional supply. Every alert ships with a full execution plan:
+            entry, VWAP-anchored target, trigger-buffered stop, and a risk:reward
+            quality gate.
+          </p>
+
+          <div className="mt-7 flex flex-wrap items-center gap-3">
+            <button
+              className={`inline-flex h-11 items-center gap-2 rounded-md px-5 text-sm font-semibold transition ${ui.primaryButton}`}
+              onClick={onSignIn}
+              type="button"
+              disabled={authState === "checking"}
+            >
+              <LogIn className="size-4" />
+              {authState === "checking" ? "Checking session..." : "Sign in to start scanning"}
+            </button>
+            <span className={`font-mono text-[11px] uppercase tracking-[0.18em] ${ui.mutedText}`}>
+              Magic link · No password
+            </span>
+          </div>
+
+          {authState === "unconfigured" ? (
+            <p className={`mt-4 text-sm ${ui.negativeText}`}>
+              Supabase env vars are not configured. Set NEXT_PUBLIC_SUPABASE_URL
+              and NEXT_PUBLIC_SUPABASE_ANON_KEY to enable sign in.
+            </p>
+          ) : null}
+        </div>
+
+        <div className={`rounded-xl border p-5 ${ui.card}`}>
+          <div className={`text-[10px] uppercase tracking-[0.22em] font-mono ${ui.mutedText}`}>
+            What you get
+          </div>
+          <ul className="mt-4 space-y-4">
+            <FeatureRow
+              ui={ui}
+              icon={<Activity className="size-4" />}
+              title="Realtime alert feed"
+              detail="Supabase-driven push of every active liquidity-trap setup with conviction scoring and fresh-data indicators."
+            />
+            <FeatureRow
+              ui={ui}
+              icon={<Target className="size-4" />}
+              title="Execution-ready tickets"
+              detail="Exact entry, VWAP target, 0.15%-buffered stop, % distances, and a R:R quality gate before you click trade."
+            />
+            <FeatureRow
+              ui={ui}
+              icon={<WalletCards className="size-4" />}
+              title="Shadow trade journal"
+              detail="Open paper trades from any alert; track unrealized P&L against live Angel One marks; close on a single click."
+            />
+            <FeatureRow
+              ui={ui}
+              icon={<LineChart className="size-4" />}
+              title="Scoped to NSE hours"
+              detail="Scanners only run when the cash session is live, so the feed never gets cluttered with stale post-close noise."
+            />
+          </ul>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function FeatureRow({
+  ui,
+  icon,
+  title,
+  detail,
+}: {
+  ui: ThemeClasses;
+  icon: ReactNode;
+  title: string;
+  detail: string;
+}) {
+  return (
+    <li className="flex items-start gap-3">
+      <span
+        className={`mt-0.5 inline-flex size-7 shrink-0 items-center justify-center rounded-md border ${ui.subtlePanel} ${ui.accentText}`}
+      >
+        {icon}
+      </span>
+      <div>
+        <div className={`text-sm font-semibold ${ui.heading}`}>{title}</div>
+        <div className={`mt-0.5 text-xs leading-5 ${ui.secondaryText}`}>{detail}</div>
+      </div>
+    </li>
+  );
+}
+
+function StatusPill({
+  icon,
+  label,
+  ui,
+}: {
+  icon: ReactNode;
+  label: string;
+  ui: ThemeClasses;
+}) {
+  return (
+    <div
+      className={`inline-flex h-10 items-center gap-2 rounded-md border px-3 text-sm ${ui.outlineButton}`}
+    >
+      {icon}
+      {label}
+    </div>
+  );
+}
+
+function SignInModal({
+  email,
+  error,
+  submitting,
+  onChange,
+  onSubmit,
+  onClose,
+  ui,
+}: {
+  email: string;
+  error: string | null;
+  submitting: boolean;
+  onChange: (value: string) => void;
+  onSubmit: (event: React.FormEvent<HTMLFormElement>) => void;
+  onClose: () => void;
+  ui: ThemeClasses;
+}) {
+  return (
+    <div
+      className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4"
+      role="dialog"
+      aria-modal="true"
+      aria-labelledby="sign-in-title"
+      onClick={(event) => {
+        if (event.target === event.currentTarget) {
+          onClose();
+        }
+      }}
+    >
+      <form
+        onSubmit={onSubmit}
+        className={`w-full max-w-md rounded-lg border p-6 shadow-2xl ${ui.card}`}
+      >
+        <div className="flex items-start justify-between gap-3">
+          <div>
+            <h2 id="sign-in-title" className={`text-lg font-semibold ${ui.heading}`}>
+              Sign in to Market Sniper
+            </h2>
+            <p className={`mt-1 text-sm ${ui.secondaryText}`}>
+              We will email you a magic link to sign in.
+            </p>
+          </div>
+          <button
+            type="button"
+            onClick={onClose}
+            disabled={submitting}
+            aria-label="Close sign in"
+            className={`inline-flex size-8 items-center justify-center rounded-md border ${ui.outlineButton}`}
+          >
+            <X className="size-4" />
+          </button>
+        </div>
+
+        <label
+          htmlFor="sign-in-email"
+          className={`mt-5 block text-xs uppercase tracking-[0.18em] ${ui.mutedText}`}
+        >
+          Email address
+        </label>
+        <input
+          id="sign-in-email"
+          type="email"
+          inputMode="email"
+          autoComplete="email"
+          autoFocus
+          required
+          value={email}
+          onChange={(event) => onChange(event.target.value)}
+          disabled={submitting}
+          className={`mt-2 h-11 w-full rounded-md border px-3 font-mono text-sm outline-none focus:ring-2 focus:ring-emerald-500/40 ${ui.subtlePanel} ${ui.heading}`}
+          placeholder="you@example.com"
+        />
+
+        {error ? (
+          <p className={`mt-3 text-sm ${ui.negativeText}`} role="alert">
+            {error}
+          </p>
+        ) : null}
+
+        <button
+          type="submit"
+          disabled={submitting}
+          className={`mt-5 inline-flex h-11 w-full items-center justify-center gap-2 rounded-md text-sm font-semibold transition ${ui.primaryButton} disabled:opacity-60`}
+        >
+          <LogIn className="size-4" />
+          {submitting ? "Sending..." : "Send magic link"}
+        </button>
+      </form>
+    </div>
+  );
+}
+
+function authLabel(authState: AuthState) {
+  if (authState === "signed-in") {
+    return "RLS active";
+  }
+  if (authState === "unconfigured") {
+    return "Supabase not configured";
+  }
+  if (authState === "checking") {
+    return "Checking auth";
+  }
+  return "Sign in required";
+}
