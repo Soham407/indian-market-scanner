@@ -318,53 +318,6 @@ grant select on public.shadow_trade_positions to authenticated;
 grant execute on function public.open_shadow_trade(uuid, integer) to authenticated;
 grant execute on function public.close_shadow_trade(uuid) to authenticated;
 
-insert into public.instruments (symbol, exchange, name, sector, last_price, previous_close, previous_day_high, previous_day_low, vwap)
-values
-  ('RELIANCE', 'NSE', 'Reliance Industries', 'Energy', 2924.50, 2898.20, 2919.00, 2864.10, 2907.85),
-  ('HDFCBANK', 'NSE', 'HDFC Bank', 'Financials', 1548.30, 1534.70, 1544.00, 1518.25, 1538.40),
-  ('INFY', 'NSE', 'Infosys', 'Information Technology', 1482.75, 1497.20, 1502.10, 1474.50, 1488.15)
-on conflict (symbol, exchange) do update set
-  name = excluded.name,
-  sector = excluded.sector,
-  last_price = excluded.last_price,
-  previous_close = excluded.previous_close,
-  previous_day_high = excluded.previous_day_high,
-  previous_day_low = excluded.previous_day_low,
-  vwap = excluded.vwap,
-  updated_at = now();
-
-insert into public.alerts (
-  instrument_id,
-  direction,
-  title,
-  thesis,
-  trigger_price,
-  current_price,
-  swept_level,
-  swept_level_name,
-  volume_multiplier,
-  conviction_score,
-  score_factors,
-  timeframe_alignment,
-  expires_at
-)
-select
-  i.id,
-  'bearish'::public.alert_direction,
-  i.symbol || ' swept previous day high',
-  'Price swept previous day high on elevated volume and faded back toward VWAP.',
-  i.previous_day_high,
-  i.last_price,
-  i.previous_day_high,
-  'Previous Day High',
-  1.74,
-  82,
-  '[{"name":"Daily trend","score":24,"state":"aligned"},{"name":"VWAP distance","score":18,"state":"extended"},{"name":"Volume expansion","score":22,"state":"confirmed"},{"name":"Level quality","score":18,"state":"clean sweep"}]'::jsonb,
-  '{"daily":"uptrend","intraday":"failed breakout","vwap":"extended above"}'::jsonb,
-  now() + interval '1 day'
-from public.instruments i
-where i.symbol = 'RELIANCE';
-
 do $$
 begin
   alter publication supabase_realtime add table public.alerts;

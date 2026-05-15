@@ -23,10 +23,31 @@ import type { AlertFeedItem, ShadowTradePosition } from "@/lib/types";
 type AuthState = "checking" | "signed-in" | "signed-out" | "unconfigured";
 type Theme = "dark" | "light";
 
+const EMAIL_PATTERN = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+
 const numberFormat = new Intl.NumberFormat("en-IN", {
   maximumFractionDigits: 2,
   minimumFractionDigits: 2,
 });
+
+const currencyFormat = new Intl.NumberFormat("en-IN", {
+  style: "currency",
+  currency: "INR",
+  maximumFractionDigits: 2,
+  minimumFractionDigits: 2,
+});
+
+function getSiteUrl() {
+  if (process.env.NEXT_PUBLIC_SITE_URL) {
+    return process.env.NEXT_PUBLIC_SITE_URL;
+  }
+
+  if (typeof window !== "undefined") {
+    return window.location.origin;
+  }
+
+  return "";
+}
 
 export function MarketSniperDashboard() {
   const configured = isSupabaseConfigured();
@@ -44,6 +65,10 @@ export function MarketSniperDashboard() {
   const [openedAlertIds, setOpenedAlertIds] = useState<Set<string>>(
     () => new Set(),
   );
+  const [signInOpen, setSignInOpen] = useState(false);
+  const [signInEmail, setSignInEmail] = useState("");
+  const [signInError, setSignInError] = useState<string | null>(null);
+  const [signInSubmitting, setSignInSubmitting] = useState(false);
   const supabase = useMemo(() => createBrowserClient(), []);
   const ui = getThemeClasses(theme);
 
@@ -185,42 +210,86 @@ export function MarketSniperDashboard() {
       )
       .subscribe();
 
-    const tradeChannel = supabase
-      .channel("market-sniper-shadow-trades")
-      .on(
-        "postgres_changes",
-        { event: "*", schema: "public", table: "shadow_trades" },
-        () => void refreshTrades(),
-      )
-      .subscribe();
+    const tradeChannel = userId
+      ? supabase
+          .channel(`market-sniper-shadow-trades-${userId}`)
+          .on(
+            "postgres_changes",
+            {
+              event: "*",
+              schema: "public",
+              table: "shadow_trades",
+              filter: `user_id=eq.${userId}`,
+            },
+            () => void refreshTrades(),
+          )
+          .subscribe()
+      : null;
 
     return () => {
       void supabase.removeChannel(alertChannel);
-      void supabase.removeChannel(tradeChannel);
+      if (tradeChannel) {
+        void supabase.removeChannel(tradeChannel);
+      }
     };
-  }, [authState, refreshAlerts, refreshTrades, supabase]);
+  }, [authState, refreshAlerts, refreshTrades, supabase, userId]);
 
-  async function signIn() {
+  function openSignIn() {
     if (!supabase) {
       setAuthState("unconfigured");
       setMessage("Supabase env vars are not configured.");
       return;
     }
 
-    const email = window.prompt("Email for magic link");
+    setSignInError(null);
+    setSignInOpen(true);
+  }
 
-    if (!email) {
+  function closeSignIn() {
+    if (signInSubmitting) {
+      return;
+    }
+    setSignInOpen(false);
+    setSignInError(null);
+  }
+
+  async function submitSignIn(event: React.FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+
+    if (!supabase) {
+      setSignInError("Supabase env vars are not configured.");
       return;
     }
 
-    const { error } = await supabase.auth.signInWithOtp({
-      email,
-      options: {
-        emailRedirectTo: window.location.origin,
-      },
-    });
+    const email = signInEmail.trim();
 
-    setMessage(error ? error.message : "Magic link sent.");
+    if (!EMAIL_PATTERN.test(email)) {
+      setSignInError("Enter a valid email address.");
+      return;
+    }
+
+    setSignInSubmitting(true);
+    setSignInError(null);
+
+    try {
+      const { error } = await supabase.auth.signInWithOtp({
+        email,
+        options: {
+          emailRedirectTo: getSiteUrl(),
+        },
+      });
+
+      if (error) {
+        setSignInError(error.message);
+        return;
+      }
+
+      setSignInOpen(false);
+      setSignInEmail("");
+      setMessage("Magic link sent. Check your email.");
+    } finally {
+      setSignInSubmitting(false);
+    }
   }
 
   async function paperTrade(alert: AlertFeedItem) {
@@ -230,7 +299,7 @@ export function MarketSniperDashboard() {
 
     if (!supabase || !userId) {
       setMessage("Sign in required before opening a shadow trade.");
-      await signIn();
+      openSignIn();
       return;
     }
 
@@ -268,7 +337,7 @@ export function MarketSniperDashboard() {
   async function closeTrade(trade: ShadowTradePosition) {
     if (!supabase || !userId) {
       setMessage("Sign in required before closing a shadow trade.");
-      await signIn();
+      openSignIn();
       return;
     }
 
@@ -316,7 +385,8 @@ export function MarketSniperDashboard() {
               {authState !== "signed-in" ? (
                 <button
                   className={`inline-flex h-10 items-center gap-2 rounded-md px-4 text-sm font-semibold transition ${ui.primaryButton}`}
-                  onClick={signIn}
+                  onClick={openSignIn}
+                  type="button"
                 >
                   <LogIn className="size-4" />
                   Sign in
@@ -331,7 +401,7 @@ export function MarketSniperDashboard() {
             <Metric
               ui={ui}
               label="Open P&L"
-              value={`Rs. ${numberFormat.format(totalPnl)}`}
+              value={currencyFormat.format(totalPnl)}
               tone={totalPnl >= 0 ? "positive" : "negative"}
             />
           </div>
@@ -408,7 +478,111 @@ export function MarketSniperDashboard() {
           <X className={`size-4 ${ui.mutedText}`} />
         </button>
       ) : null}
+
+      {signInOpen ? (
+        <SignInModal
+          email={signInEmail}
+          error={signInError}
+          submitting={signInSubmitting}
+          onChange={setSignInEmail}
+          onSubmit={submitSignIn}
+          onClose={closeSignIn}
+          ui={ui}
+        />
+      ) : null}
     </main>
+  );
+}
+
+function SignInModal({
+  email,
+  error,
+  submitting,
+  onChange,
+  onSubmit,
+  onClose,
+  ui,
+}: {
+  email: string;
+  error: string | null;
+  submitting: boolean;
+  onChange: (value: string) => void;
+  onSubmit: (event: React.FormEvent<HTMLFormElement>) => void;
+  onClose: () => void;
+  ui: ThemeClasses;
+}) {
+  return (
+    <div
+      className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4"
+      role="dialog"
+      aria-modal="true"
+      aria-labelledby="sign-in-title"
+      onClick={(event) => {
+        if (event.target === event.currentTarget) {
+          onClose();
+        }
+      }}
+    >
+      <form
+        onSubmit={onSubmit}
+        className={`w-full max-w-md rounded-lg border p-6 shadow-2xl ${ui.card}`}
+      >
+        <div className="flex items-start justify-between gap-3">
+          <div>
+            <h2 id="sign-in-title" className={`text-lg font-semibold ${ui.heading}`}>
+              Sign in to Market Sniper
+            </h2>
+            <p className={`mt-1 text-sm ${ui.secondaryText}`}>
+              We will email you a magic link to sign in.
+            </p>
+          </div>
+          <button
+            type="button"
+            onClick={onClose}
+            disabled={submitting}
+            aria-label="Close sign in"
+            className={`inline-flex size-8 items-center justify-center rounded-md border ${ui.outlineButton}`}
+          >
+            <X className="size-4" />
+          </button>
+        </div>
+
+        <label
+          htmlFor="sign-in-email"
+          className={`mt-5 block text-xs uppercase tracking-[0.18em] ${ui.mutedText}`}
+        >
+          Email address
+        </label>
+        <input
+          id="sign-in-email"
+          type="email"
+          inputMode="email"
+          autoComplete="email"
+          autoFocus
+          required
+          value={email}
+          onChange={(event) => onChange(event.target.value)}
+          disabled={submitting}
+          className={`mt-2 h-11 w-full rounded-md border px-3 font-mono text-sm outline-none focus:ring-2 focus:ring-emerald-500/40 ${ui.subtlePanel} ${ui.heading}`}
+          placeholder="you@example.com"
+        />
+
+        {error ? (
+          <p className={`mt-3 text-sm ${ui.negativeText}`} role="alert">
+            {error}
+          </p>
+        ) : null}
+
+        <button
+          type="submit"
+          disabled={submitting}
+          className={`mt-5 inline-flex h-11 w-full items-center justify-center gap-2 rounded-md text-sm font-semibold transition ${ui.primaryButton} disabled:opacity-60`}
+        >
+          <LogIn className="size-4" />
+          {submitting ? "Sending..." : "Send magic link"}
+        </button>
+      </form>
+    </div>
   );
 }
 
@@ -488,8 +662,8 @@ function AlertCard({
       </div>
 
       <div className="mt-5 grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
-        <DataTile ui={ui} label="Trigger" value={`Rs. ${numberFormat.format(alert.trigger_price)}`} />
-        <DataTile ui={ui} label="Current" value={`Rs. ${numberFormat.format(alert.current_price)}`} />
+        <DataTile ui={ui} label="Trigger" value={currencyFormat.format(alert.trigger_price)} />
+        <DataTile ui={ui} label="Current" value={currencyFormat.format(alert.current_price)} />
         <DataTile ui={ui} label="Swept level" value={alert.swept_level_name} />
         <DataTile ui={ui} label="Volume" value={`${alert.volume_multiplier}x`} />
       </div>
@@ -550,14 +724,14 @@ function TradeCard({
         </div>
         <div className={`text-right ${positive ? ui.positiveText : ui.negativeText}`}>
           <div className="font-mono text-lg font-semibold">
-            Rs. {numberFormat.format(trade.unrealized_pnl)}
+            {currencyFormat.format(trade.unrealized_pnl)}
           </div>
           <div className="text-xs">{numberFormat.format(trade.pnl_percent)}%</div>
         </div>
       </div>
       <div className="mt-4 grid grid-cols-2 gap-2 text-sm">
-        <DataTile ui={ui} label="Entry" value={`Rs. ${numberFormat.format(trade.entry_price)}`} />
-        <DataTile ui={ui} label="Mark" value={`Rs. ${numberFormat.format(trade.current_price)}`} />
+        <DataTile ui={ui} label="Entry" value={currencyFormat.format(trade.entry_price)} />
+        <DataTile ui={ui} label="Mark" value={currencyFormat.format(trade.current_price)} />
       </div>
       {trade.status === "open" ? (
         <button
@@ -686,14 +860,30 @@ function buttonLabel(
 }
 
 function relativeTime(timestamp: string) {
-  const diff = Date.now() - new Date(timestamp).getTime();
-  const minutes = Math.max(1, Math.round(diff / 60000));
+  const parsed = new Date(timestamp).getTime();
 
+  if (!Number.isFinite(parsed)) {
+    return "—";
+  }
+
+  const diff = Date.now() - parsed;
+
+  if (diff < 60000) {
+    return "just now";
+  }
+
+  const minutes = Math.round(diff / 60000);
   if (minutes < 60) {
     return `${minutes}m ago`;
   }
 
-  return `${Math.round(minutes / 60)}h ago`;
+  const hours = Math.round(minutes / 60);
+  if (hours < 24) {
+    return `${hours}h ago`;
+  }
+
+  const days = Math.round(hours / 24);
+  return `${days}d ago`;
 }
 
 type ThemeClasses = ReturnType<typeof getThemeClasses>;
