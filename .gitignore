@@ -18,3 +18,7 @@
 # Env files
 **/.env
 **/.env.*
+
+# Supabase local/link state
+supabase/.branches/
+supabase/.temp/
