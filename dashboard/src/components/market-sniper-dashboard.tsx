@@ -442,8 +442,8 @@ function AlertCard({
             <span
               className={`inline-flex items-center gap-1 rounded px-2 py-1 text-xs font-medium ${
                 bearish
-                  ? "bg-red-400/10 text-red-300"
-                  : "bg-emerald-400/10 text-emerald-300"
+                  ? ui.bearishPill
+                  : ui.bullishPill
               }`}
             >
               {bearish ? (
@@ -453,7 +453,7 @@ function AlertCard({
               )}
               {alert.direction.toUpperCase()}
             </span>
-            <span className="inline-flex items-center gap-1 text-xs text-stone-500">
+            <span className={`inline-flex items-center gap-1 text-xs ${ui.mutedText}`}>
               <Clock3 className="size-3.5" />
               {relativeTime(alert.detected_at)}
             </span>
@@ -548,7 +548,7 @@ function TradeCard({
             {trade.side.toUpperCase()} x {trade.quantity}
           </div>
         </div>
-        <div className={`text-right ${positive ? "text-emerald-300" : "text-red-300"}`}>
+        <div className={`text-right ${positive ? ui.positiveText : ui.negativeText}`}>
           <div className="font-mono text-lg font-semibold">
             Rs. {numberFormat.format(trade.unrealized_pnl)}
           </div>
@@ -589,10 +589,10 @@ function Metric({
 }) {
   const toneClass =
     tone === "positive"
-      ? "text-emerald-300"
+      ? ui.positiveText
       : tone === "negative"
-        ? "text-red-300"
-        : "text-stone-50";
+        ? ui.negativeText
+        : ui.heading;
 
   return (
     <div className={`rounded-lg border px-4 py-3 ${ui.card}`}>
@@ -717,6 +717,10 @@ function getThemeClasses(theme: Theme) {
       successButton: "border border-emerald-700/30 bg-emerald-100 text-emerald-800",
       symbolPill: "border-emerald-700/30 text-emerald-800",
       convictionBox: "border-emerald-700/30 bg-emerald-50",
+      bullishPill: "bg-emerald-100 text-emerald-800",
+      bearishPill: "bg-red-100 text-red-800",
+      positiveText: "text-emerald-700",
+      negativeText: "text-red-700",
     };
   }
 
@@ -737,5 +741,9 @@ function getThemeClasses(theme: Theme) {
     successButton: "border border-emerald-300/30 bg-emerald-300/10 text-emerald-200",
     symbolPill: "border-lime-300/30 text-lime-200",
     convictionBox: "border-lime-300/30 bg-lime-300/5",
+    bullishPill: "bg-emerald-400/10 text-emerald-300",
+    bearishPill: "bg-red-400/10 text-red-300",
+    positiveText: "text-emerald-300",
+    negativeText: "text-red-300",
   };
 }
