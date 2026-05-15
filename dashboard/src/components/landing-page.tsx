@@ -166,7 +166,7 @@ export function LandingPage() {
 
   return (
     <main className={`min-h-screen transition-colors ${ui.page}`}>
-      <div className={`border-b ${ui.header}`}>
+      <div className={`sticky top-0 z-40 border-b backdrop-blur-md ${ui.header}`}>
         <div className="mx-auto flex max-w-7xl flex-col gap-5 px-4 py-5 sm:px-6 lg:px-8">
           <div className="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
             <div>

@@ -27,62 +27,67 @@ body {
 /* --- Market Sniper landing animations -------------------------------- */
 
 [data-ms-theme="dark"] {
-  --ms-grad-1: #ef4444;
-  --ms-grad-2: #f59e0b;
-  --ms-grad-3: #10b981;
-  --ms-grad-4: #a3e635;
+  --ms-accent: #a3e635;
+  --ms-accent-soft: rgba(163, 230, 53, 0.55);
+  --ms-accent-mute: rgba(163, 230, 53, 0.18);
+  --ms-accent-glow: rgba(163, 230, 53, 0.22);
   --ms-bg: #070907;
-  --ms-bg-tilt: #0d120d;
-  --ms-line-stroke: 0.85;
-  --ms-tablet-opacity: 0.22;
+  --ms-line-opacity: 0.78;
 }
 
 [data-ms-theme="light"] {
-  --ms-grad-1: #dc2626;
-  --ms-grad-2: #d97706;
-  --ms-grad-3: #059669;
-  --ms-grad-4: #65a30d;
+  --ms-accent: #047857;
+  --ms-accent-soft: rgba(4, 120, 87, 0.45);
+  --ms-accent-mute: rgba(4, 120, 87, 0.18);
+  --ms-accent-glow: rgba(4, 120, 87, 0.18);
   --ms-bg: #f4f7ef;
-  --ms-bg-tilt: #e7ecdb;
-  --ms-line-stroke: 0.6;
-  --ms-tablet-opacity: 0.18;
+  --ms-line-opacity: 0.55;
 }
 
 .ms-landing {
   --ms-scroll: 0;
   --ms-dashoffset: 0;
-  --ms-tablet-y: 0px;
+  position: relative;
+}
+
+.ms-bg-layer {
+  position: fixed;
+  inset: 0;
+  z-index: 0;
+  pointer-events: none;
+  overflow: hidden;
+}
+
+.ms-bg-paths {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  opacity: var(--ms-line-opacity);
 }
 
 .ms-bg-paths use {
   fill: none;
-  stroke: url(#ms-grad);
+  stroke: url(#ms-accent-grad);
   stroke-linecap: round;
   stroke-dashoffset: var(--ms-dashoffset);
-  opacity: var(--ms-line-stroke);
 }
 
 .ms-bg-paths use[href="#ms-line-1"] {
-  stroke-width: 18px;
-  stroke-dasharray: 18 50 110 50 18 50 280 50 18 50 140 50 18 20000;
+  stroke-width: 14px;
+  stroke-dasharray: 14 36 96 36 14 36 220 36 14 36 120 36 14 20000;
 }
 .ms-bg-paths use[href="#ms-line-2"] {
-  stroke-width: 30px;
-  stroke-dasharray: 30 58 110 58 30 58 270 58 30 58 140 58 30 20000;
+  stroke-width: 22px;
+  stroke-dasharray: 22 44 96 44 22 44 240 44 22 44 120 44 22 20000;
 }
 .ms-bg-paths use[href="#ms-line-3"] {
-  stroke-width: 22px;
-  stroke-dasharray: 22 38 110 38 22 38 230 38 22 38 140 38 22 20000;
+  stroke-width: 18px;
+  stroke-dasharray: 18 32 96 32 18 32 200 32 18 32 120 32 18 20000;
 }
 .ms-bg-paths use[href="#ms-line-4"] {
-  stroke-width: 36px;
-  stroke-dasharray: 36 66 90 66 36 66 180 66 36 20000;
-}
-
-.ms-tablet-frame {
-  transform: rotateY(20deg) translateY(var(--ms-tablet-y));
-  opacity: var(--ms-tablet-opacity);
-  transform-origin: 0% 50%;
+  stroke-width: 26px;
+  stroke-dasharray: 26 50 80 50 26 50 180 50 26 20000;
 }
 
 @keyframes ms-pulse {
@@ -97,8 +102,8 @@ body {
 }
 
 @keyframes ms-glow {
-  0%, 100% { box-shadow: 0 0 0 0 rgba(163, 230, 53, 0); }
-  50% { box-shadow: 0 0 24px 4px rgba(163, 230, 53, 0.25); }
+  0%, 100% { box-shadow: 0 0 0 0 var(--ms-accent-glow); }
+  50% { box-shadow: 0 0 28px 4px var(--ms-accent-glow); }
 }
 
 @keyframes ms-marquee {
@@ -106,15 +111,15 @@ body {
   to { transform: translateX(-50%); }
 }
 
-@keyframes ms-tick {
-  0% { transform: translateY(0); opacity: 0; }
-  20% { opacity: 1; }
-  100% { transform: translateY(-24px); opacity: 0; }
+@keyframes ms-orb {
+  0%, 100% { transform: translate(0, 0) scale(1); opacity: 0.55; }
+  50% { transform: translate(20px, -30px) scale(1.15); opacity: 0.85; }
 }
 
 .ms-pulse { animation: ms-pulse 3.5s ease-in-out infinite; }
 .ms-drift { animation: ms-drift 6s ease-in-out infinite; }
 .ms-glow  { animation: ms-glow 4.5s ease-in-out infinite; }
+.ms-orb   { animation: ms-orb 10s ease-in-out infinite; }
 
 .ms-reveal {
   opacity: 0;
@@ -135,25 +140,9 @@ body {
   animation: ms-marquee 38s linear infinite;
 }
 
-.ms-grad-text {
-  background: linear-gradient(
-    100deg,
-    var(--ms-grad-1) 0%,
-    var(--ms-grad-2) 30%,
-    var(--ms-grad-3) 60%,
-    var(--ms-grad-4) 95%
-  );
-  background-clip: text;
-  -webkit-background-clip: text;
-  -webkit-text-fill-color: transparent;
-  color: transparent;
-  background-size: 200% 200%;
-  animation: ms-grad-shift 9s ease-in-out infinite;
-}
-
-@keyframes ms-grad-shift {
-  0%, 100% { background-position: 0% 50%; }
-  50% { background-position: 100% 50%; }
+.ms-accent-text {
+  color: var(--ms-accent);
+  text-shadow: 0 0 24px var(--ms-accent-glow);
 }
 
 .ms-ticker-dot {
@@ -162,14 +151,14 @@ body {
   width: 8px;
   height: 8px;
   border-radius: 50%;
-  background: var(--ms-grad-4);
+  background: var(--ms-accent);
 }
 .ms-ticker-dot::after {
   content: "";
   position: absolute;
   inset: -4px;
   border-radius: 50%;
-  background: var(--ms-grad-4);
+  background: var(--ms-accent);
   opacity: 0.35;
   animation: ms-pulse 1.8s ease-in-out infinite;
 }
@@ -178,8 +167,8 @@ body {
   .ms-pulse,
   .ms-drift,
   .ms-glow,
+  .ms-orb,
   .ms-marquee-track,
-  .ms-grad-text,
   .ms-ticker-dot::after {
     animation: none !important;
   }
@@ -187,8 +176,5 @@ body {
     opacity: 1;
     transform: none;
     transition: none;
-  }
-  .ms-tablet-frame {
-    transform: rotateY(20deg);
   }
 }

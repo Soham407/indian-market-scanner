@@ -66,10 +66,6 @@ export function LandingContent({
         "--ms-dashoffset",
         `${(-2400 * progress).toFixed(1)}`,
       );
-      el.style.setProperty(
-        "--ms-tablet-y",
-        `${(-0.55 * viewport * progress).toFixed(1)}px`,
-      );
     };
 
     const onScroll = () => {
@@ -140,59 +136,34 @@ export function LandingContent({
 
 function AnimatedBackground() {
   return (
-    <div
-      aria-hidden="true"
-      className="pointer-events-none fixed inset-0 -z-0 overflow-hidden"
-    >
-      <div className="absolute inset-0 flex items-start justify-center">
-        <div
-          className="ms-tablet-frame mt-[6vw] h-[150vh] w-[90vw] max-w-[1200px] rounded-[30px]"
-          style={{
-            background:
-              "linear-gradient(109.61deg, color-mix(in oklab, var(--ms-bg-tilt) 90%, white 4%) 4%, var(--ms-bg-tilt) 85%)",
-            boxShadow:
-              "inset 0 0 0 1px color-mix(in oklab, var(--ms-grad-4) 18%, transparent), 0 50px 120px -20px color-mix(in oklab, var(--ms-grad-1) 20%, transparent)",
-          }}
-        >
-          <div
-            className="absolute inset-6 rounded-[20px] border"
-            style={{
-              borderColor:
-                "color-mix(in oklab, var(--ms-grad-4) 22%, transparent)",
-              background: "var(--ms-bg)",
-            }}
-          />
-        </div>
-      </div>
-
+    <div aria-hidden="true" className="ms-bg-layer">
       <svg
-        className="ms-bg-paths absolute left-1/2 top-12 hidden h-[120%] w-[740px] -translate-x-[55%] sm:block"
-        viewBox="0 0 740 2400"
-        preserveAspectRatio="none"
+        className="ms-bg-paths"
+        viewBox="0 0 1440 1800"
+        preserveAspectRatio="xMidYMid slice"
         xmlns="http://www.w3.org/2000/svg"
       >
         <defs>
-          <linearGradient id="ms-grad" x1="0" y1="0" x2="1" y2="1">
-            <stop offset="5%" stopColor="var(--ms-grad-1)" />
-            <stop offset="40%" stopColor="var(--ms-grad-2)" />
-            <stop offset="70%" stopColor="var(--ms-grad-3)" />
-            <stop offset="100%" stopColor="var(--ms-grad-4)" />
+          <linearGradient id="ms-accent-grad" x1="0" y1="0" x2="0" y2="1">
+            <stop offset="0%" stopColor="var(--ms-accent)" stopOpacity="0.35" />
+            <stop offset="40%" stopColor="var(--ms-accent)" stopOpacity="1" />
+            <stop offset="100%" stopColor="var(--ms-accent)" stopOpacity="0.45" />
           </linearGradient>
           <path
             id="ms-line-1"
-            d="M 106,45 H 481 C 595,45 707,173 707,280 V 516 C 707,652 585,738 483,737 L 301,735 C 212,736 160,777 159,893 L 157,1097 C 156,1214 194,1270 291,1270 H 477 C 587,1267 707,1381 707,1490 V 1732 C 707,1845 582,1957 459,1957 H 105 V 2300"
+            d="M 100,-80 C 220,200 -20,500 100,800 C 220,1100 -20,1400 100,1700 C 180,1860 100,1880 100,1900"
           />
           <path
             id="ms-line-2"
-            d="M 33,85 H 477 C 573,85 667,192 667,286 V 510 C 667,626 569,698 477,697 L 285,695 C 193,695 119,770 119,863 V 1141 C 119,1235 193,1310 285,1310 H 479 C 571,1310 667,1404 667,1498 V 1726 C 667,1820 563,1917 453,1917 H 105 V 2300"
+            d="M 120,-80 C 120,360 1320,360 1320,820 C 1320,1280 120,1280 120,1740 C 160,1860 120,1900 120,1900"
           />
           <path
             id="ms-line-3"
-            d="M 155,127 H 463 C 557,127 625,213 625,304 V 482 C 625,591 575,656 459,655 L 277,653 C 158,653 77,762 77,849 V 1151 C 77,1269 184,1347 257,1348 L 461,1352 C 553,1352 625,1419 625,1512 V 1712 C 625,1803 536,1875 437,1875 H 105 V 2300"
+            d="M 1320,-80 C 1320,360 120,360 120,820 C 120,1280 1320,1280 1320,1740 C 1280,1860 1320,1900 1320,1900"
           />
           <path
             id="ms-line-4"
-            d="M 283,173 C 285,173 448,173 448,173 C 544,175 577,238 577,330 V 486 C 577,580 529,612 437,611 L 269,609 C 167,602 29,702 29,851 V 1163 C 29,1274 130,1398 271,1398 H 433 C 542,1399 577,1447 577,1534 V 1696 C 577,1769 524,1826 459,1826 L 106,1827 V 2300"
+            d="M 1340,-80 C 1240,200 1460,500 1340,800 C 1240,1100 1460,1400 1340,1700 C 1260,1860 1340,1880 1340,1900"
           />
         </defs>
         <use href="#ms-line-1" />
@@ -202,17 +173,32 @@ function AnimatedBackground() {
       </svg>
 
       <div
-        className="absolute inset-x-0 top-0 h-[40vh] opacity-60"
+        className="ms-orb absolute -left-32 top-[18%] h-[420px] w-[420px] rounded-full blur-3xl"
         style={{
           background:
-            "radial-gradient(ellipse at 50% 0%, color-mix(in oklab, var(--ms-grad-4) 22%, transparent) 0%, transparent 70%)",
+            "radial-gradient(circle, var(--ms-accent-glow) 0%, transparent 70%)",
+        }}
+      />
+      <div
+        className="ms-orb absolute -right-32 top-[55%] h-[520px] w-[520px] rounded-full blur-3xl"
+        style={{
+          animationDelay: "-3s",
+          background:
+            "radial-gradient(circle, var(--ms-accent-mute) 0%, transparent 70%)",
+        }}
+      />
+      <div
+        className="absolute inset-x-0 top-0 h-[60vh] opacity-70"
+        style={{
+          background:
+            "radial-gradient(ellipse at 50% -10%, var(--ms-accent-glow) 0%, transparent 60%)",
         }}
       />
       <div
         className="absolute inset-x-0 bottom-0 h-[40vh] opacity-50"
         style={{
           background:
-            "radial-gradient(ellipse at 50% 100%, color-mix(in oklab, var(--ms-grad-1) 18%, transparent) 0%, transparent 70%)",
+            "radial-gradient(ellipse at 50% 110%, var(--ms-accent-mute) 0%, transparent 65%)",
         }}
       />
     </div>
@@ -249,7 +235,7 @@ function HeroSection({
       >
         <span className={ui.heading}>Catch institutional</span>
         <br />
-        <span className="ms-grad-text">liquidity traps</span>
+        <span className="ms-accent-text">liquidity traps</span>
         <span className={ui.heading}> before the reset.</span>
       </h2>
 
@@ -462,7 +448,7 @@ function TrapChart({ ui, stage }: { ui: ThemeClasses; stage: 0 | 1 | 2 | number 
         x2="200"
         y2="38"
         strokeDasharray="3 3"
-        stroke="var(--ms-grad-2)"
+        stroke="#f59e0b"
         opacity="0.7"
       />
       <line
@@ -471,13 +457,13 @@ function TrapChart({ ui, stage }: { ui: ThemeClasses; stage: 0 | 1 | 2 | number 
         x2="200"
         y2="58"
         strokeDasharray="2 4"
-        stroke="var(--ms-grad-3)"
-        opacity="0.55"
+        stroke="var(--ms-accent)"
+        opacity="0.6"
       />
-      <text x="2" y="34" fontSize="8" fill="var(--ms-grad-2)">
+      <text x="2" y="34" fontSize="8" fill="#f59e0b">
         PDH
       </text>
-      <text x="2" y="68" fontSize="8" fill="var(--ms-grad-3)">
+      <text x="2" y="68" fontSize="8" fill="var(--ms-accent)">
         VWAP
       </text>
 
@@ -490,14 +476,14 @@ function TrapChart({ ui, stage }: { ui: ThemeClasses; stage: 0 | 1 | 2 | number 
       {stage >= 1 ? (
         <path
           d="M 80,48 L 100,32 L 115,28 L 130,34"
-          stroke="var(--ms-grad-1)"
+          stroke="#ef4444"
           strokeWidth="1.8"
         />
       ) : null}
       {stage >= 2 ? (
         <path
           d="M 130,34 L 150,42 L 170,54 L 195,62"
-          stroke="var(--ms-grad-1)"
+          stroke="#ef4444"
           strokeWidth="1.8"
         />
       ) : null}
@@ -506,7 +492,7 @@ function TrapChart({ ui, stage }: { ui: ThemeClasses; stage: 0 | 1 | 2 | number 
           cx="170"
           cy="54"
           r="2.6"
-          fill="var(--ms-grad-1)"
+          fill="#ef4444"
           className="ms-pulse"
         />
       ) : null}
@@ -639,10 +625,10 @@ function CodeCard({
       style={{ ["--ms-reveal-delay" as string]: `${index * 120}ms` }}
     >
       <div
-        className="absolute -inset-px -z-10 opacity-60 blur-[18px]"
+        className="absolute -inset-px -z-10 opacity-70 blur-[22px]"
         style={{
           background:
-            "linear-gradient(135deg, var(--ms-grad-1) 0%, var(--ms-grad-2) 35%, var(--ms-grad-3) 65%, var(--ms-grad-4) 100%)",
+            "radial-gradient(ellipse at top left, var(--ms-accent-glow) 0%, transparent 70%)",
         }}
       />
       <header
@@ -670,7 +656,7 @@ function CodeCard({
         <pre
           className={`mt-5 overflow-x-auto rounded-md border px-4 py-3 font-mono text-[12px] leading-6 ${ui.subtlePanel}`}
         >
-          <code className="ms-grad-text">{card.code}</code>
+          <code className="ms-accent-text">{card.code}</code>
         </pre>
       </div>
     </div>
@@ -977,10 +963,10 @@ function FinalCta({
         className={`ms-reveal relative overflow-hidden rounded-3xl border-2 p-10 text-center sm:p-16 ${ui.executionPlan}`}
       >
         <div
-          className="absolute -inset-1 -z-10 opacity-50 blur-3xl"
+          className="absolute -inset-1 -z-10 opacity-70 blur-3xl"
           style={{
             background:
-              "linear-gradient(135deg, var(--ms-grad-1) 0%, var(--ms-grad-2) 30%, var(--ms-grad-3) 65%, var(--ms-grad-4) 100%)",
+              "radial-gradient(circle at 30% 20%, var(--ms-accent-glow) 0%, transparent 65%)",
           }}
         />
         <p
@@ -990,7 +976,7 @@ function FinalCta({
         </p>
         <h3 className={`mt-4 text-3xl font-semibold sm:text-5xl ${ui.heading}`}>
           Start scanning with a{" "}
-          <span className="ms-grad-text">single click</span>.
+          <span className="ms-accent-text">single click</span>.
         </h3>
         <p
           className={`mx-auto mt-4 max-w-xl text-base leading-7 ${ui.secondaryText}`}
