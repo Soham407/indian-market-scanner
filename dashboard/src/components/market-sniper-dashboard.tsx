@@ -37,7 +37,12 @@ export function MarketSniperDashboard() {
   );
   const [trades, setTrades] = useState<ShadowTradePosition[]>([]);
   const [message, setMessage] = useState<string | null>(null);
-  const [pendingAlertId, setPendingAlertId] = useState<string | null>(null);
+  const [submittingAlertIds, setSubmittingAlertIds] = useState<Set<string>>(
+    () => new Set(),
+  );
+  const [openedAlertIds, setOpenedAlertIds] = useState<Set<string>>(
+    () => new Set(),
+  );
   const supabase = useMemo(() => createBrowserClient(), []);
 
   const refreshAlerts = useCallback(async () => {
@@ -76,7 +81,15 @@ export function MarketSniperDashboard() {
       return;
     }
 
-    setTrades((data ?? []) as ShadowTradePosition[]);
+    const positions = (data ?? []) as ShadowTradePosition[];
+    setTrades(positions);
+    setOpenedAlertIds(
+      new Set(
+        positions
+          .filter((trade) => trade.alert_id)
+          .map((trade) => trade.alert_id as string),
+      ),
+    );
   }, [supabase, userId]);
 
   useEffect(() => {
@@ -95,6 +108,7 @@ export function MarketSniperDashboard() {
       setAuthState(user ? "signed-in" : "signed-out");
       if (!user) {
         setTrades([]);
+        setOpenedAlertIds(new Set());
       }
     });
 
@@ -104,6 +118,7 @@ export function MarketSniperDashboard() {
         setAuthState(session?.user ? "signed-in" : "signed-out");
         if (!session?.user) {
           setTrades([]);
+          setOpenedAlertIds(new Set());
         }
       },
     );
@@ -182,28 +197,45 @@ export function MarketSniperDashboard() {
   }
 
   async function paperTrade(alert: AlertFeedItem) {
+    if (submittingAlertIds.has(alert.id) || openedAlertIds.has(alert.id)) {
+      return;
+    }
+
     if (!supabase || !userId) {
       setMessage("Sign in required before opening a shadow trade.");
       await signIn();
       return;
     }
 
-    setPendingAlertId(alert.id);
+    setSubmittingAlertIds((current) => new Set(current).add(alert.id));
 
-    const { error } = await supabase.rpc("open_shadow_trade", {
-      p_alert_id: alert.id,
-      p_quantity: 1,
-    });
+    try {
+      const { error } = await supabase.rpc("open_shadow_trade", {
+        p_alert_id: alert.id,
+        p_quantity: 1,
+      });
 
-    setPendingAlertId(null);
+      if (error) {
+        setMessage(`Shadow trade failed: ${error.message}`);
+        return;
+      }
 
-    if (error) {
-      setMessage(`Shadow trade failed: ${error.message}`);
-      return;
+      setOpenedAlertIds((current) => new Set(current).add(alert.id));
+      setMessage(`${alert.symbol} shadow trade opened.`);
+      await refreshTrades();
+    } catch (error) {
+      setMessage(
+        `Shadow trade failed: ${
+          error instanceof Error ? error.message : "Unknown error"
+        }`,
+      );
+    } finally {
+      setSubmittingAlertIds((current) => {
+        const next = new Set(current);
+        next.delete(alert.id);
+        return next;
+      });
     }
-
-    setMessage(`${alert.symbol} shadow trade opened.`);
-    await refreshTrades();
   }
 
   async function closeTrade(trade: ShadowTradePosition) {
@@ -287,7 +319,8 @@ export function MarketSniperDashboard() {
                 key={alert.id}
                 alert={alert}
                 authState={authState}
-                isPending={pendingAlertId === alert.id}
+                isOpened={openedAlertIds.has(alert.id)}
+                isSubmitting={submittingAlertIds.has(alert.id)}
                 onPaperTrade={paperTrade}
               />
             ))}
@@ -332,16 +365,19 @@ export function MarketSniperDashboard() {
 function AlertCard({
   alert,
   authState,
-  isPending,
+  isOpened,
+  isSubmitting,
   onPaperTrade,
 }: {
   alert: AlertFeedItem;
   authState: AuthState;
-  isPending: boolean;
+  isOpened: boolean;
+  isSubmitting: boolean;
   onPaperTrade: (alert: AlertFeedItem) => void;
 }) {
   const bearish = alert.direction === "bearish";
   const requiresAuth = authState !== "signed-in";
+  const isDisabled = isSubmitting || isOpened || authState === "checking";
 
   return (
     <article className="rounded-lg border border-stone-800 bg-[#0d120d] p-4 shadow-2xl shadow-black/20">
@@ -380,15 +416,21 @@ function AlertCard({
           <Conviction score={alert.conviction_score} />
           <button
             className={`inline-flex h-10 items-center gap-2 rounded-md px-4 text-sm font-semibold transition ${
-              requiresAuth
+              isOpened
+                ? "border border-emerald-300/30 bg-emerald-300/10 text-emerald-200"
+                : requiresAuth
                 ? "border border-stone-700 bg-stone-900 text-stone-300 hover:border-lime-300/50 hover:text-lime-200"
                 : "bg-stone-100 text-[#10140f] hover:bg-lime-200"
             }`}
-            disabled={isPending || authState === "checking"}
+            disabled={isDisabled}
             onClick={() => onPaperTrade(alert)}
           >
-            {requiresAuth ? <LogIn className="size-4" /> : <Target className="size-4" />}
-            {buttonLabel(authState, isPending)}
+            {requiresAuth && !isOpened ? (
+              <LogIn className="size-4" />
+            ) : (
+              <Target className="size-4" />
+            )}
+            {buttonLabel(authState, isSubmitting, isOpened)}
           </button>
         </div>
       </div>
@@ -538,8 +580,16 @@ function authLabel(authState: AuthState) {
   return "Sign in required";
 }
 
-function buttonLabel(authState: AuthState, isPending: boolean) {
-  if (isPending) {
+function buttonLabel(
+  authState: AuthState,
+  isSubmitting: boolean,
+  isOpened: boolean,
+) {
+  if (isOpened) {
+    return "Trade Open";
+  }
+
+  if (isSubmitting) {
     return "Opening...";
   }
 
