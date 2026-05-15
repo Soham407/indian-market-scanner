@@ -9,9 +9,13 @@ import {
   Gauge,
   LogIn,
   Moon,
+  Receipt,
+  ShieldAlert,
   ShieldCheck,
   Sun,
   Target,
+  TrendingDown,
+  TrendingUp,
   WalletCards,
   X,
 } from "lucide-react";
@@ -640,24 +644,6 @@ function AlertCard({
 
         <div className="flex shrink-0 items-center gap-3">
           <Conviction score={alert.conviction_score} ui={ui} />
-          <button
-            className={`inline-flex h-10 items-center gap-2 rounded-md px-4 text-sm font-semibold transition ${
-              isOpened
-                ? ui.successButton
-                : requiresAuth
-                ? ui.outlineButton
-                : ui.paperTradeButton
-            }`}
-            disabled={isDisabled}
-            onClick={() => onPaperTrade(alert)}
-          >
-            {requiresAuth && !isOpened ? (
-              <LogIn className="size-4" />
-            ) : (
-              <Target className="size-4" />
-            )}
-            {buttonLabel(authState, isSubmitting, isOpened)}
-          </button>
         </div>
       </div>
 
@@ -682,7 +668,137 @@ function AlertCard({
           </div>
         ))}
       </div>
+
+      <ExecutionPlan alert={alert} ui={ui} />
+
+      <button
+        className={`mt-3 inline-flex h-11 w-full items-center justify-center gap-2 rounded-md text-sm font-semibold transition ${
+          isOpened
+            ? ui.successButton
+            : requiresAuth
+            ? ui.outlineButton
+            : ui.paperTradeButton
+        }`}
+        disabled={isDisabled}
+        onClick={() => onPaperTrade(alert)}
+      >
+        {requiresAuth && !isOpened ? (
+          <LogIn className="size-4" />
+        ) : (
+          <Target className="size-4" />
+        )}
+        {buttonLabel(authState, isSubmitting, isOpened)}
+      </button>
     </article>
+  );
+}
+
+function ExecutionPlan({ alert, ui }: { alert: AlertFeedItem; ui: ThemeClasses }) {
+  const bearish = alert.direction === "bearish";
+  const entry = alert.current_price;
+  const vwap = alert.vwap;
+
+  const stopLoss = bearish
+    ? alert.trigger_price * 1.0015
+    : alert.trigger_price * 0.9985;
+
+  const profitMargin = vwap === null ? null : bearish ? entry - vwap : vwap - entry;
+  const riskMargin = bearish ? stopLoss - entry : entry - stopLoss;
+  const rrRatio =
+    profitMargin !== null && riskMargin > 0 ? profitMargin / riskMargin : null;
+
+  const actionLabel = bearish ? "SHORT ENTRY" : "LONG ENTRY";
+  const actionPill = bearish ? ui.shortPill : ui.longPill;
+  const ActionIcon = bearish ? TrendingDown : TrendingUp;
+
+  return (
+    <section className={`mt-5 rounded-md border-2 ${ui.executionPlan}`}>
+      <header className={`flex items-center justify-between border-b px-4 py-2 ${ui.executionPlanHeader}`}>
+        <div className="flex items-center gap-2">
+          <Receipt className="size-4" />
+          <span className="font-mono text-xs uppercase tracking-[0.22em]">
+            Trade Execution Plan
+          </span>
+        </div>
+        <span className={`font-mono text-[10px] uppercase tracking-[0.2em] ${ui.mutedText}`}>
+          Order Ticket
+        </span>
+      </header>
+
+      <div className="grid gap-3 px-4 py-4 md:grid-cols-3">
+        <div className={`rounded-md border px-3 py-3 ${ui.subtlePanel}`}>
+          <div className={`text-[10px] uppercase tracking-[0.18em] ${ui.mutedText}`}>
+            Action
+          </div>
+          <div className="mt-2 flex items-center gap-2">
+            <span
+              className={`inline-flex items-center gap-1 rounded px-2 py-1 text-xs font-bold tracking-wider ${actionPill}`}
+            >
+              <ActionIcon className="size-3.5" />
+              {actionLabel}
+            </span>
+          </div>
+          <div className={`mt-2 font-mono text-lg font-semibold ${ui.heading}`}>
+            @ {currencyFormat.format(entry)}
+          </div>
+        </div>
+
+        <div className={`rounded-md border px-3 py-3 ${ui.subtlePanel}`}>
+          <div className="flex items-center justify-between">
+            <div className={`text-[10px] uppercase tracking-[0.18em] ${ui.mutedText}`}>
+              Take Profit
+            </div>
+            <Target className={`size-3.5 ${ui.positiveText}`} />
+          </div>
+          {vwap === null ? (
+            <>
+              <div className={`mt-2 font-mono text-lg font-semibold ${ui.mutedText}`}>
+                VWAP n/a
+              </div>
+              <div className={`mt-1 text-xs ${ui.mutedText}`}>
+                Awaiting fresh VWAP
+              </div>
+            </>
+          ) : (
+            <>
+              <div className={`mt-2 font-mono text-lg font-semibold ${ui.positiveText}`}>
+                {currencyFormat.format(vwap)}
+              </div>
+              <div className={`mt-1 text-xs ${ui.positiveText}`}>
+                {profitMargin !== null && profitMargin >= 0 ? "+" : ""}
+                {profitMargin !== null ? numberFormat.format(profitMargin) : "—"} expected margin
+              </div>
+            </>
+          )}
+        </div>
+
+        <div className={`rounded-md border px-3 py-3 ${ui.subtlePanel}`}>
+          <div className="flex items-center justify-between">
+            <div className={`text-[10px] uppercase tracking-[0.18em] ${ui.mutedText}`}>
+              Stop Loss
+            </div>
+            <ShieldAlert className={`size-3.5 ${ui.negativeText}`} />
+          </div>
+          <div className={`mt-2 font-mono text-lg font-semibold ${ui.negativeText}`}>
+            {currencyFormat.format(stopLoss)}
+          </div>
+          <div className={`mt-1 text-xs ${ui.negativeText}`}>
+            −{numberFormat.format(Math.abs(riskMargin))} risk (0.15% buffer)
+          </div>
+        </div>
+      </div>
+
+      <footer className={`flex items-center justify-between border-t px-4 py-2 ${ui.executionPlanHeader}`}>
+        <span className={`font-mono text-[10px] uppercase tracking-[0.2em] ${ui.mutedText}`}>
+          Risk : Reward
+        </span>
+        <span className={`font-mono text-sm font-semibold ${ui.accentText}`}>
+          {rrRatio !== null && Number.isFinite(rrRatio)
+            ? `${numberFormat.format(rrRatio)} : 1`
+            : "—"}
+        </span>
+      </footer>
+    </section>
   );
 }
 
@@ -911,6 +1027,10 @@ function getThemeClasses(theme: Theme) {
       bearishPill: "bg-red-100 text-red-800",
       positiveText: "text-emerald-700",
       negativeText: "text-red-700",
+      shortPill: "bg-red-600 text-white shadow-sm",
+      longPill: "bg-emerald-600 text-white shadow-sm",
+      executionPlan: "border-emerald-700/40 bg-[#fbfcf7]",
+      executionPlanHeader: "border-emerald-700/20 bg-emerald-50 text-emerald-900",
     };
   }
 
@@ -935,5 +1055,9 @@ function getThemeClasses(theme: Theme) {
     bearishPill: "bg-red-400/10 text-red-300",
     positiveText: "text-emerald-300",
     negativeText: "text-red-300",
+    shortPill: "bg-red-500 text-white shadow-md shadow-red-500/30",
+    longPill: "bg-emerald-500 text-[#10140f] shadow-md shadow-emerald-500/30",
+    executionPlan: "border-lime-300/30 bg-[#0a0f0a]",
+    executionPlanHeader: "border-lime-300/20 bg-lime-300/5 text-lime-200",
   };
 }
