@@ -23,3 +23,172 @@ body {
   background: var(--background);
   color: var(--foreground);
 }
+
+/* --- Market Sniper landing animations -------------------------------- */
+
+[data-ms-theme="dark"] {
+  --ms-grad-1: #ef4444;
+  --ms-grad-2: #f59e0b;
+  --ms-grad-3: #10b981;
+  --ms-grad-4: #a3e635;
+  --ms-bg: #070907;
+  --ms-bg-tilt: #0d120d;
+  --ms-line-stroke: 0.85;
+  --ms-tablet-opacity: 0.22;
+}
+
+[data-ms-theme="light"] {
+  --ms-grad-1: #dc2626;
+  --ms-grad-2: #d97706;
+  --ms-grad-3: #059669;
+  --ms-grad-4: #65a30d;
+  --ms-bg: #f4f7ef;
+  --ms-bg-tilt: #e7ecdb;
+  --ms-line-stroke: 0.6;
+  --ms-tablet-opacity: 0.18;
+}
+
+.ms-landing {
+  --ms-scroll: 0;
+  --ms-dashoffset: 0;
+  --ms-tablet-y: 0px;
+}
+
+.ms-bg-paths use {
+  fill: none;
+  stroke: url(#ms-grad);
+  stroke-linecap: round;
+  stroke-dashoffset: var(--ms-dashoffset);
+  opacity: var(--ms-line-stroke);
+}
+
+.ms-bg-paths use[href="#ms-line-1"] {
+  stroke-width: 18px;
+  stroke-dasharray: 18 50 110 50 18 50 280 50 18 50 140 50 18 20000;
+}
+.ms-bg-paths use[href="#ms-line-2"] {
+  stroke-width: 30px;
+  stroke-dasharray: 30 58 110 58 30 58 270 58 30 58 140 58 30 20000;
+}
+.ms-bg-paths use[href="#ms-line-3"] {
+  stroke-width: 22px;
+  stroke-dasharray: 22 38 110 38 22 38 230 38 22 38 140 38 22 20000;
+}
+.ms-bg-paths use[href="#ms-line-4"] {
+  stroke-width: 36px;
+  stroke-dasharray: 36 66 90 66 36 66 180 66 36 20000;
+}
+
+.ms-tablet-frame {
+  transform: rotateY(20deg) translateY(var(--ms-tablet-y));
+  opacity: var(--ms-tablet-opacity);
+  transform-origin: 0% 50%;
+}
+
+@keyframes ms-pulse {
+  0%, 100% { opacity: 0.65; transform: scale(1); }
+  50% { opacity: 1; transform: scale(1.06); }
+}
+
+@keyframes ms-drift {
+  0% { transform: translateY(0px); }
+  50% { transform: translateY(-8px); }
+  100% { transform: translateY(0px); }
+}
+
+@keyframes ms-glow {
+  0%, 100% { box-shadow: 0 0 0 0 rgba(163, 230, 53, 0); }
+  50% { box-shadow: 0 0 24px 4px rgba(163, 230, 53, 0.25); }
+}
+
+@keyframes ms-marquee {
+  from { transform: translateX(0); }
+  to { transform: translateX(-50%); }
+}
+
+@keyframes ms-tick {
+  0% { transform: translateY(0); opacity: 0; }
+  20% { opacity: 1; }
+  100% { transform: translateY(-24px); opacity: 0; }
+}
+
+.ms-pulse { animation: ms-pulse 3.5s ease-in-out infinite; }
+.ms-drift { animation: ms-drift 6s ease-in-out infinite; }
+.ms-glow  { animation: ms-glow 4.5s ease-in-out infinite; }
+
+.ms-reveal {
+  opacity: 0;
+  transform: translateY(24px);
+  transition:
+    opacity 700ms cubic-bezier(0.2, 0.7, 0.2, 1),
+    transform 700ms cubic-bezier(0.2, 0.7, 0.2, 1);
+  transition-delay: var(--ms-reveal-delay, 0ms);
+  will-change: opacity, transform;
+}
+
+.ms-reveal.is-revealed {
+  opacity: 1;
+  transform: translateY(0);
+}
+
+.ms-marquee-track {
+  animation: ms-marquee 38s linear infinite;
+}
+
+.ms-grad-text {
+  background: linear-gradient(
+    100deg,
+    var(--ms-grad-1) 0%,
+    var(--ms-grad-2) 30%,
+    var(--ms-grad-3) 60%,
+    var(--ms-grad-4) 95%
+  );
+  background-clip: text;
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+  color: transparent;
+  background-size: 200% 200%;
+  animation: ms-grad-shift 9s ease-in-out infinite;
+}
+
+@keyframes ms-grad-shift {
+  0%, 100% { background-position: 0% 50%; }
+  50% { background-position: 100% 50%; }
+}
+
+.ms-ticker-dot {
+  position: relative;
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--ms-grad-4);
+}
+.ms-ticker-dot::after {
+  content: "";
+  position: absolute;
+  inset: -4px;
+  border-radius: 50%;
+  background: var(--ms-grad-4);
+  opacity: 0.35;
+  animation: ms-pulse 1.8s ease-in-out infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .ms-pulse,
+  .ms-drift,
+  .ms-glow,
+  .ms-marquee-track,
+  .ms-grad-text,
+  .ms-ticker-dot::after {
+    animation: none !important;
+  }
+  .ms-reveal {
+    opacity: 1;
+    transform: none;
+    transition: none;
+  }
+  .ms-tablet-frame {
+    transform: rotateY(20deg);
+  }
+}

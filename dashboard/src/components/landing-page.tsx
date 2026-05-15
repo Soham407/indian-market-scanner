@@ -1,22 +1,19 @@
 "use client";
 
 import {
-  Activity,
   Crosshair,
-  LineChart,
   LogIn,
   LogOut,
   Moon,
   ShieldCheck,
   Sun,
-  Target,
-  WalletCards,
   X,
 } from "lucide-react";
 import type { ReactNode } from "react";
 import { useEffect, useMemo, useState } from "react";
 import { createBrowserClient, isSupabaseConfigured } from "@/lib/supabase/client";
 import { getThemeClasses, type Theme, type ThemeClasses } from "@/lib/theme";
+import { LandingContent } from "./landing-content";
 import { MarketSniperDashboard } from "./market-sniper-dashboard";
 
 type AuthState = "checking" | "signed-in" | "signed-out" | "unconfigured";
@@ -225,7 +222,12 @@ export function LandingPage() {
       {isSignedIn && supabase ? (
         <MarketSniperDashboard supabase={supabase} userId={userId} ui={ui} />
       ) : (
-        <LandingHero ui={ui} authState={authState} onSignIn={openSignIn} />
+        <LandingContent
+          ui={ui}
+          theme={theme}
+          authState={authState}
+          onSignIn={openSignIn}
+        />
       )}
 
       {notice ? (
@@ -250,124 +252,6 @@ export function LandingPage() {
         />
       ) : null}
     </main>
-  );
-}
-
-function LandingHero({
-  ui,
-  authState,
-  onSignIn,
-}: {
-  ui: ThemeClasses;
-  authState: AuthState;
-  onSignIn: () => void;
-}) {
-  return (
-    <div className="mx-auto max-w-7xl px-4 py-12 sm:px-6 sm:py-16 lg:px-8 lg:py-20">
-      <div className="grid gap-10 lg:grid-cols-[minmax(0,1fr)_minmax(0,420px)] lg:items-center">
-        <div>
-          <span
-            className={`inline-flex items-center gap-2 rounded-full border px-3 py-1 font-mono text-[10px] uppercase tracking-[0.24em] ${ui.symbolPill}`}
-          >
-            <Activity className="size-3" />
-            NSE · Live order ticket
-          </span>
-          <h2
-            className={`mt-6 text-3xl font-semibold leading-tight tracking-tight sm:text-4xl lg:text-5xl ${ui.heading}`}
-          >
-            Catch institutional liquidity traps
-            <span className={`block ${ui.accentText}`}>before the reset.</span>
-          </h2>
-          <p className={`mt-5 max-w-xl text-base leading-7 ${ui.secondaryText}`}>
-            Market Sniper watches NSE intraday for previous-day-high sweeps that
-            stall extended from VWAP — the moments fast money fades into
-            institutional supply. Every alert ships with a full execution plan:
-            entry, VWAP-anchored target, trigger-buffered stop, and a risk:reward
-            quality gate.
-          </p>
-
-          <div className="mt-7 flex flex-wrap items-center gap-3">
-            <button
-              className={`inline-flex h-11 items-center gap-2 rounded-md px-5 text-sm font-semibold transition ${ui.primaryButton}`}
-              onClick={onSignIn}
-              type="button"
-              disabled={authState === "checking"}
-            >
-              <LogIn className="size-4" />
-              {authState === "checking" ? "Checking session..." : "Sign in to start scanning"}
-            </button>
-            <span className={`font-mono text-[11px] uppercase tracking-[0.18em] ${ui.mutedText}`}>
-              Magic link · No password
-            </span>
-          </div>
-
-          {authState === "unconfigured" ? (
-            <p className={`mt-4 text-sm ${ui.negativeText}`}>
-              Supabase env vars are not configured. Set NEXT_PUBLIC_SUPABASE_URL
-              and NEXT_PUBLIC_SUPABASE_ANON_KEY to enable sign in.
-            </p>
-          ) : null}
-        </div>
-
-        <div className={`rounded-xl border p-5 ${ui.card}`}>
-          <div className={`text-[10px] uppercase tracking-[0.22em] font-mono ${ui.mutedText}`}>
-            What you get
-          </div>
-          <ul className="mt-4 space-y-4">
-            <FeatureRow
-              ui={ui}
-              icon={<Activity className="size-4" />}
-              title="Realtime alert feed"
-              detail="Supabase-driven push of every active liquidity-trap setup with conviction scoring and fresh-data indicators."
-            />
-            <FeatureRow
-              ui={ui}
-              icon={<Target className="size-4" />}
-              title="Execution-ready tickets"
-              detail="Exact entry, VWAP target, 0.15%-buffered stop, % distances, and a R:R quality gate before you click trade."
-            />
-            <FeatureRow
-              ui={ui}
-              icon={<WalletCards className="size-4" />}
-              title="Shadow trade journal"
-              detail="Open paper trades from any alert; track unrealized P&L against live Angel One marks; close on a single click."
-            />
-            <FeatureRow
-              ui={ui}
-              icon={<LineChart className="size-4" />}
-              title="Scoped to NSE hours"
-              detail="Scanners only run when the cash session is live, so the feed never gets cluttered with stale post-close noise."
-            />
-          </ul>
-        </div>
-      </div>
-    </div>
-  );
-}
-
-function FeatureRow({
-  ui,
-  icon,
-  title,
-  detail,
-}: {
-  ui: ThemeClasses;
-  icon: ReactNode;
-  title: string;
-  detail: string;
-}) {
-  return (
-    <li className="flex items-start gap-3">
-      <span
-        className={`mt-0.5 inline-flex size-7 shrink-0 items-center justify-center rounded-md border ${ui.subtlePanel} ${ui.accentText}`}
-      >
-        {icon}
-      </span>
-      <div>
-        <div className={`text-sm font-semibold ${ui.heading}`}>{title}</div>
-        <div className={`mt-0.5 text-xs leading-5 ${ui.secondaryText}`}>{detail}</div>
-      </div>
-    </li>
   );
 }
 
