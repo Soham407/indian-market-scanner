@@ -1,19 +1,12 @@
 const IST_TIME_ZONE = "Asia/Kolkata";
+const IST_OFFSET_MINUTES = 330;
+const WEEKDAYS = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
 
 export function getMarketSessionStatus(now = new Date()) {
-  const parts = new Intl.DateTimeFormat("en-US", {
-    timeZone: IST_TIME_ZONE,
-    weekday: "short",
-    hour: "2-digit",
-    minute: "2-digit",
-    hour12: false,
-  }).formatToParts(now);
-
-  const part = (type: string) =>
-    parts.find((item) => item.type === type)?.value ?? "";
-  const weekday = part("weekday");
-  const hour = Number(part("hour"));
-  const minute = Number(part("minute"));
+  const ist = new Date(now.getTime() + IST_OFFSET_MINUTES * 60 * 1000);
+  const weekday = WEEKDAYS[ist.getUTCDay()];
+  const hour = ist.getUTCHours();
+  const minute = ist.getUTCMinutes();
   const minutesSinceMidnight = hour * 60 + minute;
   const isWeekday = !["Sat", "Sun"].includes(weekday);
   const isRegularSession =
