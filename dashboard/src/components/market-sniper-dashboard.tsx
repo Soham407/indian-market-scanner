@@ -15,11 +15,11 @@ import {
 } from "lucide-react";
 import type { ReactNode } from "react";
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { sampleAlerts, sampleTrades } from "@/lib/sample-data";
+import { sampleAlerts } from "@/lib/sample-data";
 import { createBrowserClient, isSupabaseConfigured } from "@/lib/supabase/client";
 import type { AlertFeedItem, ShadowTradePosition } from "@/lib/types";
 
-type AuthState = "checking" | "signed-in" | "signed-out" | "demo";
+type AuthState = "checking" | "signed-in" | "signed-out" | "unconfigured";
 
 const numberFormat = new Intl.NumberFormat("en-IN", {
   maximumFractionDigits: 2,
@@ -29,12 +29,15 @@ const numberFormat = new Intl.NumberFormat("en-IN", {
 export function MarketSniperDashboard() {
   const configured = isSupabaseConfigured();
   const [authState, setAuthState] = useState<AuthState>(
-    configured ? "checking" : "demo",
+    configured ? "checking" : "unconfigured",
   );
   const [userId, setUserId] = useState<string | null>(null);
-  const [alerts, setAlerts] = useState<AlertFeedItem[]>(sampleAlerts);
-  const [trades, setTrades] = useState<ShadowTradePosition[]>(sampleTrades);
+  const [alerts, setAlerts] = useState<AlertFeedItem[]>(
+    configured ? [] : sampleAlerts,
+  );
+  const [trades, setTrades] = useState<ShadowTradePosition[]>([]);
   const [message, setMessage] = useState<string | null>(null);
+  const [pendingAlertId, setPendingAlertId] = useState<string | null>(null);
   const supabase = useMemo(() => createBrowserClient(), []);
 
   const refreshAlerts = useCallback(async () => {
@@ -90,12 +93,18 @@ export function MarketSniperDashboard() {
       const user = data.user;
       setUserId(user?.id ?? null);
       setAuthState(user ? "signed-in" : "signed-out");
+      if (!user) {
+        setTrades([]);
+      }
     });
 
     const { data: authListener } = supabase.auth.onAuthStateChange(
       (_event, session) => {
         setUserId(session?.user.id ?? null);
         setAuthState(session?.user ? "signed-in" : "signed-out");
+        if (!session?.user) {
+          setTrades([]);
+        }
       },
     );
 
@@ -151,8 +160,8 @@ export function MarketSniperDashboard() {
 
   async function signIn() {
     if (!supabase) {
-      setAuthState("demo");
-      setMessage("Demo mode is active because Supabase env vars are not configured.");
+      setAuthState("unconfigured");
+      setMessage("Supabase env vars are not configured.");
       return;
     }
 
@@ -173,42 +182,23 @@ export function MarketSniperDashboard() {
   }
 
   async function paperTrade(alert: AlertFeedItem) {
-    const side = alert.direction === "bearish" ? "short" : "long";
-
     if (!supabase || !userId) {
-      const optimisticTrade: ShadowTradePosition = {
-        id: `demo-trade-${alert.id}-${Date.now()}`,
-        user_id: "demo-user",
-        alert_id: alert.id,
-        instrument_id: alert.instrument_id,
-        symbol: alert.symbol,
-        exchange: alert.exchange,
-        instrument_name: alert.instrument_name,
-        side,
-        quantity: 1,
-        entry_price: alert.current_price,
-        current_price: alert.current_price,
-        exit_price: null,
-        entry_reason: "Liquidity Trap Alert shadow trade",
-        exit_reason: null,
-        status: "open",
-        opened_at: new Date().toISOString(),
-        closed_at: null,
-        unrealized_pnl: 0,
-        pnl_percent: 0,
-      };
-      setTrades((current) => [optimisticTrade, ...current]);
-      setMessage("Demo shadow trade opened locally.");
+      setMessage("Sign in required before opening a shadow trade.");
+      await signIn();
       return;
     }
+
+    setPendingAlertId(alert.id);
 
     const { error } = await supabase.rpc("open_shadow_trade", {
       p_alert_id: alert.id,
       p_quantity: 1,
     });
 
+    setPendingAlertId(null);
+
     if (error) {
-      setMessage(error.message);
+      setMessage(`Shadow trade failed: ${error.message}`);
       return;
     }
 
@@ -217,20 +207,9 @@ export function MarketSniperDashboard() {
   }
 
   async function closeTrade(trade: ShadowTradePosition) {
-    if (!supabase || authState === "demo") {
-      setTrades((current) =>
-        current.map((item) =>
-          item.id === trade.id
-            ? {
-                ...item,
-                status: "closed",
-                exit_price: item.current_price,
-                closed_at: new Date().toISOString(),
-                exit_reason: "Manual close",
-              }
-            : item,
-        ),
-      );
+    if (!supabase || !userId) {
+      setMessage("Sign in required before closing a shadow trade.");
+      await signIn();
       return;
     }
 
@@ -239,7 +218,7 @@ export function MarketSniperDashboard() {
     });
 
     if (error) {
-      setMessage(error.message);
+      setMessage(`Close failed: ${error.message}`);
       return;
     }
 
@@ -304,7 +283,13 @@ export function MarketSniperDashboard() {
           </div>
           <div className="space-y-4">
             {alerts.map((alert) => (
-              <AlertCard key={alert.id} alert={alert} onPaperTrade={paperTrade} />
+              <AlertCard
+                key={alert.id}
+                alert={alert}
+                authState={authState}
+                isPending={pendingAlertId === alert.id}
+                onPaperTrade={paperTrade}
+              />
             ))}
           </div>
         </section>
@@ -346,12 +331,17 @@ export function MarketSniperDashboard() {
 
 function AlertCard({
   alert,
+  authState,
+  isPending,
   onPaperTrade,
 }: {
   alert: AlertFeedItem;
+  authState: AuthState;
+  isPending: boolean;
   onPaperTrade: (alert: AlertFeedItem) => void;
 }) {
   const bearish = alert.direction === "bearish";
+  const requiresAuth = authState !== "signed-in";
 
   return (
     <article className="rounded-lg border border-stone-800 bg-[#0d120d] p-4 shadow-2xl shadow-black/20">
@@ -389,11 +379,16 @@ function AlertCard({
         <div className="flex shrink-0 items-center gap-3">
           <Conviction score={alert.conviction_score} />
           <button
-            className="inline-flex h-10 items-center gap-2 rounded-md bg-stone-100 px-4 text-sm font-semibold text-[#10140f] transition hover:bg-lime-200"
+            className={`inline-flex h-10 items-center gap-2 rounded-md px-4 text-sm font-semibold transition ${
+              requiresAuth
+                ? "border border-stone-700 bg-stone-900 text-stone-300 hover:border-lime-300/50 hover:text-lime-200"
+                : "bg-stone-100 text-[#10140f] hover:bg-lime-200"
+            }`}
+            disabled={isPending || authState === "checking"}
             onClick={() => onPaperTrade(alert)}
           >
-            <Target className="size-4" />
-            Paper Trade
+            {requiresAuth ? <LogIn className="size-4" /> : <Target className="size-4" />}
+            {buttonLabel(authState, isPending)}
           </button>
         </div>
       </div>
@@ -532,8 +527,8 @@ function authLabel(authState: AuthState) {
     return "RLS active";
   }
 
-  if (authState === "demo") {
-    return "Demo data";
+  if (authState === "unconfigured") {
+    return "Supabase not configured";
   }
 
   if (authState === "checking") {
@@ -541,6 +536,22 @@ function authLabel(authState: AuthState) {
   }
 
   return "Sign in required";
+}
+
+function buttonLabel(authState: AuthState, isPending: boolean) {
+  if (isPending) {
+    return "Opening...";
+  }
+
+  if (authState === "checking") {
+    return "Checking Auth";
+  }
+
+  if (authState !== "signed-in") {
+    return "Sign In to Trade";
+  }
+
+  return "Paper Trade";
 }
 
 function relativeTime(timestamp: string) {

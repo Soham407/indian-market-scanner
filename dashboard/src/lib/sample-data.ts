@@ -1,4 +1,4 @@
-import type { AlertFeedItem, ShadowTradePosition } from "./types";
+import type { AlertFeedItem } from "./types";
 
 export const sampleAlerts: AlertFeedItem[] = [
   {
@@ -64,29 +64,5 @@ export const sampleAlerts: AlertFeedItem[] = [
     status: "active",
     detected_at: new Date(Date.now() - 22 * 60 * 1000).toISOString(),
     expires_at: new Date(Date.now() + 18 * 60 * 60 * 1000).toISOString(),
-  },
-];
-
-export const sampleTrades: ShadowTradePosition[] = [
-  {
-    id: "sample-trade-reliance",
-    user_id: "sample-user",
-    alert_id: "sample-alert-reliance",
-    instrument_id: "sample-instrument-reliance",
-    symbol: "RELIANCE",
-    exchange: "NSE",
-    instrument_name: "Reliance Industries",
-    side: "short",
-    quantity: 10,
-    entry_price: 2924.5,
-    current_price: 2910.2,
-    exit_price: null,
-    entry_reason: "Liquidity Trap Alert paper trade",
-    exit_reason: null,
-    status: "open",
-    opened_at: new Date(Date.now() - 5 * 60 * 1000).toISOString(),
-    closed_at: null,
-    unrealized_pnl: 143,
-    pnl_percent: 0.49,
   },
 ];
