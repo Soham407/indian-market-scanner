@@ -15,7 +15,6 @@ select
   a.thesis,
   a.trigger_price,
   a.current_price,
-  i.vwap,
   a.swept_level,
   a.swept_level_name,
   a.volume_multiplier,
@@ -27,7 +26,8 @@ select
   a.detected_at,
   a.expires_at,
   a.created_at,
-  a.updated_at
+  a.updated_at,
+  i.vwap
 from public.alerts a
 join public.instruments i on i.id = a.instrument_id;
 
