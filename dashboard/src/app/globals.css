@@ -58,36 +58,88 @@ body {
   overflow: hidden;
 }
 
-.ms-bg-paths {
+.ms-bg-chart {
   position: absolute;
   inset: 0;
   width: 100%;
   height: 100%;
-  opacity: var(--ms-line-opacity);
 }
 
-.ms-bg-paths use {
+.ms-chart-grid line {
+  stroke: var(--ms-accent);
+  stroke-width: 1;
+  opacity: 0.06;
+}
+
+.ms-chart-axis-label {
+  fill: var(--ms-accent);
+  font-family: var(--font-mono), monospace;
+  font-size: 11px;
+  opacity: 0.35;
+  letter-spacing: 0.18em;
+}
+
+.ms-vwap {
+  stroke: var(--ms-accent);
+  stroke-width: 1.4;
+  stroke-dasharray: 10 8;
+  opacity: 0.4;
+}
+
+.ms-candle-drift {
+  animation: ms-candle-drift 90s linear infinite;
+  transform-origin: center;
+}
+
+@keyframes ms-candle-drift {
+  from { transform: translateX(0); }
+  to { transform: translateX(-1440px); }
+}
+
+.ms-candle-up rect,
+.ms-candle-up line {
+  fill: #10b981;
+  stroke: #10b981;
+}
+.ms-candle-up { opacity: 0.28; }
+
+.ms-candle-down rect,
+.ms-candle-down line {
+  fill: #ef4444;
+  stroke: #ef4444;
+}
+.ms-candle-down { opacity: 0.26; }
+
+.ms-candle-flash {
+  animation: ms-candle-flash 6s ease-in-out infinite;
+  transform-box: fill-box;
+  transform-origin: center;
+}
+
+.ms-candle-flash rect,
+.ms-candle-flash line {
+  fill: var(--ms-accent);
+  stroke: var(--ms-accent);
+  filter: drop-shadow(0 0 6px var(--ms-accent-glow));
+}
+
+@keyframes ms-candle-flash {
+  0%, 100% { opacity: 0.32; }
+  45% { opacity: 1; }
+  55% { opacity: 1; }
+}
+
+.ms-sweep-marker {
   fill: none;
-  stroke: url(#ms-accent-grad);
-  stroke-linecap: round;
-  stroke-dashoffset: var(--ms-dashoffset);
+  stroke: var(--ms-accent);
+  stroke-width: 1.5;
+  opacity: 0.6;
+  animation: ms-sweep-pulse 4s ease-in-out infinite;
 }
 
-.ms-bg-paths use[href="#ms-line-1"] {
-  stroke-width: 14px;
-  stroke-dasharray: 14 36 96 36 14 36 220 36 14 36 120 36 14 20000;
-}
-.ms-bg-paths use[href="#ms-line-2"] {
-  stroke-width: 22px;
-  stroke-dasharray: 22 44 96 44 22 44 240 44 22 44 120 44 22 20000;
-}
-.ms-bg-paths use[href="#ms-line-3"] {
-  stroke-width: 18px;
-  stroke-dasharray: 18 32 96 32 18 32 200 32 18 32 120 32 18 20000;
-}
-.ms-bg-paths use[href="#ms-line-4"] {
-  stroke-width: 26px;
-  stroke-dasharray: 26 50 80 50 26 50 180 50 26 20000;
+@keyframes ms-sweep-pulse {
+  0%, 100% { opacity: 0.25; r: 18; }
+  50% { opacity: 0.7; r: 26; }
 }
 
 @keyframes ms-pulse {
@@ -111,15 +163,9 @@ body {
   to { transform: translateX(-50%); }
 }
 
-@keyframes ms-orb {
-  0%, 100% { transform: translate(0, 0) scale(1); opacity: 0.55; }
-  50% { transform: translate(20px, -30px) scale(1.15); opacity: 0.85; }
-}
-
 .ms-pulse { animation: ms-pulse 3.5s ease-in-out infinite; }
 .ms-drift { animation: ms-drift 6s ease-in-out infinite; }
 .ms-glow  { animation: ms-glow 4.5s ease-in-out infinite; }
-.ms-orb   { animation: ms-orb 10s ease-in-out infinite; }
 
 .ms-reveal {
   opacity: 0;
@@ -167,7 +213,9 @@ body {
   .ms-pulse,
   .ms-drift,
   .ms-glow,
-  .ms-orb,
+  .ms-candle-drift,
+  .ms-candle-flash,
+  .ms-sweep-marker,
   .ms-marquee-track,
   .ms-ticker-dot::after {
     animation: none !important;

@@ -39,52 +39,6 @@ export function LandingContent({
 }) {
   const rootRef = useRef<HTMLDivElement | null>(null);
 
-  // Scroll-linked CSS vars: dashoffset for the dashed SVG paths,
-  // y-offset for the parallax 3D tablet frame.
-  useEffect(() => {
-    const el = rootRef.current;
-    if (!el) return;
-    if (
-      typeof window !== "undefined" &&
-      window.matchMedia("(prefers-reduced-motion: reduce)").matches
-    ) {
-      return;
-    }
-
-    let ticking = false;
-
-    const update = () => {
-      ticking = false;
-      const rect = el.getBoundingClientRect();
-      const viewport = window.innerHeight || 1;
-      const total = rect.height - viewport;
-      const scrolled = Math.min(Math.max(-rect.top, 0), Math.max(total, 1));
-      const progress = total > 0 ? scrolled / total : 0;
-
-      el.style.setProperty("--ms-scroll", progress.toFixed(4));
-      el.style.setProperty(
-        "--ms-dashoffset",
-        `${(-2400 * progress).toFixed(1)}`,
-      );
-    };
-
-    const onScroll = () => {
-      if (!ticking) {
-        ticking = true;
-        requestAnimationFrame(update);
-      }
-    };
-
-    update();
-    window.addEventListener("scroll", onScroll, { passive: true });
-    window.addEventListener("resize", onScroll, { passive: true });
-
-    return () => {
-      window.removeEventListener("scroll", onScroll);
-      window.removeEventListener("resize", onScroll);
-    };
-  }, []);
-
   // IntersectionObserver-driven reveal-on-scroll.
   useEffect(() => {
     const el = rootRef.current;
@@ -134,61 +88,153 @@ export function LandingContent({
 /* Animated background — fixed layer with parallax tablet + SVG paths */
 /* ------------------------------------------------------------------ */
 
+type Candle = {
+  x: number;
+  open: number;
+  close: number;
+  high: number;
+  low: number;
+  bullish: boolean;
+  flash: boolean;
+};
+
+// Deterministic candle generator — same output server + client so SSR
+// rendering and hydration agree.
+function generateCandles(count: number, seed: number): Candle[] {
+  let s = seed;
+  const rand = () => {
+    s = (s * 9301 + 49297) % 233280;
+    return s / 233280;
+  };
+
+  const VIEW_W = 1440;
+  const MID = 900; // mid-price line in SVG y-coords (VWAP)
+  const spacing = VIEW_W / count;
+  let lastClose = MID;
+  const out: Candle[] = [];
+
+  for (let i = 0; i < count; i++) {
+    const drift = (rand() - 0.5) * 70;
+    const open = lastClose;
+    const close = open + drift;
+    const wickTop = Math.min(open, close) - (10 + rand() * 38);
+    const wickBottom = Math.max(open, close) + (10 + rand() * 38);
+    // In SVG y is inverted: lower y = higher price.
+    const bullish = close < open;
+    out.push({
+      x: spacing / 2 + i * spacing,
+      open,
+      close,
+      high: wickTop,
+      low: wickBottom,
+      bullish,
+      flash: i === 6 || i === 13 || i === 21,
+    });
+    lastClose = close;
+    // Mean-reverting so the chart stays near VWAP.
+    if (Math.abs(lastClose - MID) > 220) {
+      lastClose = MID + (rand() - 0.5) * 40;
+    }
+  }
+
+  return out;
+}
+
+const CANDLE_COUNT = 28;
+const CANDLE_BODY_W = 14;
+
+function CandleGlyph({ c }: { c: Candle }) {
+  const bodyTop = Math.min(c.open, c.close);
+  const bodyHeight = Math.max(2, Math.abs(c.close - c.open));
+  const wrapClass = c.flash
+    ? "ms-candle-flash"
+    : c.bullish
+      ? "ms-candle-up"
+      : "ms-candle-down";
+
+  return (
+    <g className={wrapClass} transform={`translate(${c.x.toFixed(1)}, 0)`}>
+      <line x1="0" y1={c.high} x2="0" y2={c.low} strokeWidth="1.5" />
+      <rect
+        x={-CANDLE_BODY_W / 2}
+        y={bodyTop}
+        width={CANDLE_BODY_W}
+        height={bodyHeight}
+        rx="1"
+      />
+    </g>
+  );
+}
+
 function AnimatedBackground() {
+  const candles = generateCandles(CANDLE_COUNT, 42);
+  // Duplicate the set so the linear translateX(-1440px) loop is seamless.
+  const candlesB = candles.map((c) => ({ ...c, x: c.x + 1440 }));
+
+  // Horizontal grid lines every 150 units across viewBox height 1800.
+  const hGrid = Array.from({ length: 11 }, (_, i) => 150 + i * 150);
+  // Vertical grid lines every 120 units across viewBox width 2880.
+  const vGrid = Array.from({ length: 24 }, (_, i) => 120 + i * 120);
+
   return (
     <div aria-hidden="true" className="ms-bg-layer">
       <svg
-        className="ms-bg-paths"
-        viewBox="0 0 1440 1800"
+        className="ms-bg-chart"
+        viewBox="0 0 2880 1800"
         preserveAspectRatio="xMidYMid slice"
         xmlns="http://www.w3.org/2000/svg"
       >
-        <defs>
-          <linearGradient id="ms-accent-grad" x1="0" y1="0" x2="0" y2="1">
-            <stop offset="0%" stopColor="var(--ms-accent)" stopOpacity="0.35" />
-            <stop offset="40%" stopColor="var(--ms-accent)" stopOpacity="1" />
-            <stop offset="100%" stopColor="var(--ms-accent)" stopOpacity="0.45" />
-          </linearGradient>
-          <path
-            id="ms-line-1"
-            d="M 100,-80 C 220,200 -20,500 100,800 C 220,1100 -20,1400 100,1700 C 180,1860 100,1880 100,1900"
-          />
-          <path
-            id="ms-line-2"
-            d="M 120,-80 C 120,360 1320,360 1320,820 C 1320,1280 120,1280 120,1740 C 160,1860 120,1900 120,1900"
-          />
-          <path
-            id="ms-line-3"
-            d="M 1320,-80 C 1320,360 120,360 120,820 C 120,1280 1320,1280 1320,1740 C 1280,1860 1320,1900 1320,1900"
-          />
-          <path
-            id="ms-line-4"
-            d="M 1340,-80 C 1240,200 1460,500 1340,800 C 1240,1100 1460,1400 1340,1700 C 1260,1860 1340,1880 1340,1900"
-          />
-        </defs>
-        <use href="#ms-line-1" />
-        <use href="#ms-line-2" />
-        <use href="#ms-line-3" />
-        <use href="#ms-line-4" />
+        <g className="ms-chart-grid">
+          {hGrid.map((y) => (
+            <line key={`h${y}`} x1="0" y1={y} x2="2880" y2={y} />
+          ))}
+          {vGrid.map((x) => (
+            <line key={`v${x}`} x1={x} y1="0" x2={x} y2="1800" />
+          ))}
+        </g>
+
+        {/* VWAP reference line */}
+        <line className="ms-vwap" x1="0" y1="900" x2="2880" y2="900" />
+        <text className="ms-chart-axis-label" x="20" y="892">
+          VWAP
+        </text>
+
+        {/* Previous-day-high reference (above VWAP) */}
+        <line
+          className="ms-vwap"
+          x1="0"
+          y1="720"
+          x2="2880"
+          y2="720"
+          strokeDasharray="4 10"
+          style={{ opacity: 0.22 }}
+        />
+        <text
+          className="ms-chart-axis-label"
+          x="20"
+          y="712"
+          style={{ opacity: 0.22 }}
+        >
+          PDH
+        </text>
+
+        {/* Drifting candle field — duplicated so translateX(-1440) loops */}
+        <g className="ms-candle-drift">
+          {candles.map((c, i) => (
+            <CandleGlyph key={`a-${i}`} c={c} />
+          ))}
+          {candlesB.map((c, i) => (
+            <CandleGlyph key={`b-${i}`} c={c} />
+          ))}
+        </g>
+
+        {/* Sweep marker — a pulsing circle near the PDH line on the right */}
+        <circle className="ms-sweep-marker" cx="2400" cy="720" r="22" />
+        <circle className="ms-sweep-marker" cx="2400" cy="720" r="3" style={{ animationDelay: "-1s" }} />
       </svg>
 
       <div
-        className="ms-orb absolute -left-32 top-[18%] h-[420px] w-[420px] rounded-full blur-3xl"
-        style={{
-          background:
-            "radial-gradient(circle, var(--ms-accent-glow) 0%, transparent 70%)",
-        }}
-      />
-      <div
-        className="ms-orb absolute -right-32 top-[55%] h-[520px] w-[520px] rounded-full blur-3xl"
-        style={{
-          animationDelay: "-3s",
-          background:
-            "radial-gradient(circle, var(--ms-accent-mute) 0%, transparent 70%)",
-        }}
-      />
-      <div
-        className="absolute inset-x-0 top-0 h-[60vh] opacity-70"
+        className="absolute inset-x-0 top-0 h-[55vh] opacity-70"
         style={{
           background:
             "radial-gradient(ellipse at 50% -10%, var(--ms-accent-glow) 0%, transparent 60%)",
