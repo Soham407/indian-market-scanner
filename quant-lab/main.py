@@ -149,6 +149,7 @@ def run_walk_forward_lab(path_pattern="data/raw/intraday/*.csv", ticker_filter=N
         bait = h_s.rolling(window=3).max() > daily_h
         trap = c_s < daily_h
         vol_check = v_s > (vol_sma * 1.5)
+        is_above_vwap = c_s > (vwap * 1.002)
         
         hour = c_s.index.hour
         minute = c_s.index.minute
@@ -164,7 +165,7 @@ def run_walk_forward_lab(path_pattern="data/raw/intraday/*.csv", ticker_filter=N
         time_mask_2d = pd.DataFrame(np.tile(is_morning[:, None], (1, c_s.shape[1])), index=c_s.index, columns=c_s.columns)
         eod_mask_2d = pd.DataFrame(np.tile(is_eod[:, None], (1, c_s.shape[1])), index=c_s.index, columns=c_s.columns)
 
-        entries = bait & trap & vol_check & time_mask_2d
+        entries = bait & trap & vol_check & time_mask_2d & is_above_vwap
         exits = build_time_decay_exits(entries, l_s, vwap, eod_mask_2d, decay_bars=6)
 
         return vbt.Portfolio.from_signals(
