@@ -36,13 +36,26 @@ body {
 }
 
 [data-ms-theme="light"] {
-  --ms-accent: #047857;
-  --ms-accent-soft: rgba(4, 120, 87, 0.45);
-  --ms-accent-mute: rgba(4, 120, 87, 0.18);
-  --ms-accent-glow: rgba(4, 120, 87, 0.18);
+  --ms-accent: #059669;
+  --ms-accent-soft: rgba(5, 150, 105, 0.55);
+  --ms-accent-mute: rgba(5, 150, 105, 0.28);
+  --ms-accent-glow: rgba(5, 150, 105, 0.35);
   --ms-bg: #f4f7ef;
-  --ms-line-opacity: 0.55;
+  --ms-line-opacity: 0.85;
 }
+
+/* Light-mode chart elements need higher opacity to read against the
+   off-white page — emerald at 28% blends into the background. */
+[data-ms-theme="light"] .ms-chart-grid line { opacity: 0.14; }
+[data-ms-theme="light"] .ms-vwap { opacity: 0.7; }
+[data-ms-theme="light"] .ms-chart-axis-label { opacity: 0.6; }
+[data-ms-theme="light"] .ms-candle-up { opacity: 0.55; }
+[data-ms-theme="light"] .ms-candle-down { opacity: 0.55; }
+[data-ms-theme="light"] .ms-candle-flash rect,
+[data-ms-theme="light"] .ms-candle-flash line {
+  filter: drop-shadow(0 0 10px var(--ms-accent-glow));
+}
+[data-ms-theme="light"] .ms-sweep-marker { opacity: 0.85; }
 
 .ms-landing {
   --ms-scroll: 0;

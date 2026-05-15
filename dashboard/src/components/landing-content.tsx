@@ -40,25 +40,41 @@ export function LandingContent({
   const rootRef = useRef<HTMLDivElement | null>(null);
 
   // IntersectionObserver-driven reveal-on-scroll.
+  //
+  // We re-run this effect when `theme` changes because a theme toggle
+  // re-renders every element whose className includes theme-derived
+  // tokens — React rewrites className and strips the `is-revealed`
+  // class we previously added imperatively. The viewport sweep below
+  // re-applies `is-revealed` to anything currently visible, and we
+  // intentionally don't `unobserve` so scrolling back up still reveals.
   useEffect(() => {
     const el = rootRef.current;
     if (!el) return;
-    if (
+
+    const reduced =
       typeof window !== "undefined" &&
-      window.matchMedia("(prefers-reduced-motion: reduce)").matches
-    ) {
+      window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+
+    if (reduced) {
       el.querySelectorAll(".ms-reveal").forEach((node) =>
         node.classList.add("is-revealed"),
       );
       return;
     }
 
+    const vh = window.innerHeight;
+    el.querySelectorAll<HTMLElement>(".ms-reveal").forEach((node) => {
+      const rect = node.getBoundingClientRect();
+      if (rect.top < vh * 0.9 && rect.bottom > 0) {
+        node.classList.add("is-revealed");
+      }
+    });
+
     const observer = new IntersectionObserver(
       (entries) => {
         for (const entry of entries) {
           if (entry.isIntersecting) {
             entry.target.classList.add("is-revealed");
-            observer.unobserve(entry.target);
           }
         }
       },
@@ -68,7 +84,7 @@ export function LandingContent({
     el.querySelectorAll(".ms-reveal").forEach((node) => observer.observe(node));
 
     return () => observer.disconnect();
-  }, []);
+  }, [theme]);
 
   return (
     <div ref={rootRef} className="ms-landing relative" data-ms-theme={theme}>
