@@ -3,11 +3,13 @@
 import {
   ArrowDownRight,
   ArrowUpRight,
+  BarChart2,
   BellRing,
   Check,
   Clock3,
   Gauge,
   Receipt,
+  RefreshCw,
   ShieldAlert,
   Target,
   TrendingDown,
@@ -130,8 +132,8 @@ export function MarketSniperDashboard({
   const [sortMode, setSortMode] = useState<"newest" | "rr" | "conviction">(
     "newest",
   );
-  // Ref-based in-flight gate: state setters batch, so two clicks in the
-  // same tick both pass the Set check and double-submit the RPC.
+  const [alertTab, setAlertTab] = useState<"live" | "history">("live");
+  const [historyAlerts, setHistoryAlerts] = useState<AlertFeedItem[]>([]);
   const inFlightAlertIds = useRef<Set<string>>(new Set());
 
   const refreshAlerts = useCallback(async () => {
@@ -172,6 +174,26 @@ export function MarketSniperDashboard({
       ),
     );
   }, [supabase, userId]);
+
+  const fetchHistory = useCallback(async () => {
+    const todayIst = new Date(Date.now() + 5.5 * 3600 * 1000)
+      .toISOString()
+      .slice(0, 10);
+    const { data, error } = await supabase
+      .from("alert_feed")
+      .select("*")
+      .in("status", ["expired", "invalidated"])
+      .gte("expires_at", `${todayIst}T00:00:00.000Z`)
+      .order("detected_at", { ascending: false })
+      .limit(25);
+
+    if (error) {
+      setMessage(error.message);
+      return;
+    }
+
+    setHistoryAlerts((data ?? []) as AlertFeedItem[]);
+  }, [supabase]);
 
   useEffect(() => {
     queueMicrotask(() => {
@@ -324,137 +346,208 @@ export function MarketSniperDashboard({
 
       <div className="mx-auto grid max-w-7xl gap-6 px-4 py-6 sm:px-6 lg:grid-cols-[minmax(0,1fr)_420px] lg:px-8">
         <section className="min-w-0">
-          <div className="mb-4 flex items-center justify-between">
+          <div className="mb-4 flex flex-wrap items-center justify-between gap-2">
             <div className="flex items-center gap-2">
               <BellRing className={`size-5 ${ui.accentText}`} />
-              <h2 className="text-lg font-semibold">Live Alert Feed</h2>
+              <h2 className="text-lg font-semibold">Alert Feed</h2>
             </div>
-            <span className={`font-mono text-xs uppercase tracking-[0.2em] ${ui.mutedText}`}>
-              Realtime
-            </span>
-          </div>
-          <div
-            className={`mb-4 flex flex-wrap items-center gap-2 rounded-md border p-2 ${ui.subtlePanel}`}
-          >
-            <div
-              className="flex items-center gap-1"
-              role="group"
-              aria-label="Filter alerts by direction"
-            >
-              {(
-                [
-                  { id: "all", label: "All" },
-                  { id: "bullish", label: "Bullish" },
-                  { id: "bearish", label: "Bearish" },
-                ] as const
-              ).map((opt) => {
-                const active = directionFilter === opt.id;
-                return (
-                  <button
-                    key={opt.id}
-                    type="button"
-                    onClick={() => setDirectionFilter(opt.id)}
-                    aria-label={`Show ${opt.label.toLowerCase()} alerts`}
-                    aria-pressed={active}
-                    className={`rounded-md border px-2 py-1 text-xs font-medium transition ${
-                      active ? `${ui.accentText} ${ui.subtlePanel}` : ui.outlineButton
-                    }`}
-                  >
-                    {opt.label}
-                  </button>
-                );
-              })}
-            </div>
-
-            <div
-              className="flex items-center gap-1"
-              role="group"
-              aria-label="Filter alerts by freshness"
-            >
-              {(
-                [
-                  { id: "all", label: "All ages" },
-                  { id: "fresh", label: "Fresh only" },
-                ] as const
-              ).map((opt) => {
-                const active = freshnessFilter === opt.id;
-                return (
-                  <button
-                    key={opt.id}
-                    type="button"
-                    onClick={() => setFreshnessFilter(opt.id)}
-                    aria-label={`Filter freshness: ${opt.label}`}
-                    aria-pressed={active}
-                    className={`rounded-md border px-2 py-1 text-xs font-medium transition ${
-                      active ? `${ui.accentText} ${ui.subtlePanel}` : ui.outlineButton
-                    }`}
-                  >
-                    {opt.label}
-                  </button>
-                );
-              })}
-            </div>
-
-            <label className="ml-auto flex items-center gap-1 text-xs">
-              <span className={ui.mutedText}>Min conviction</span>
-              <select
-                aria-label="Minimum conviction score"
-                className={`rounded-md border px-2 py-1 text-xs ${ui.outlineButton}`}
-                value={minConviction}
-                onChange={(event) =>
-                  setMinConviction(
-                    Number.parseInt(event.target.value, 10) as 0 | 60 | 70 | 80,
-                  )
-                }
+            <div className="flex flex-wrap items-center gap-1" role="tablist" aria-label="Alert feed tabs">
+              <button
+                type="button"
+                role="tab"
+                aria-selected={alertTab === "live"}
+                onClick={() => setAlertTab("live")}
+                className={`rounded-md border px-3 py-1.5 text-xs font-medium transition ${
+                  alertTab === "live" ? `${ui.accentText} ${ui.subtlePanel}` : ui.outlineButton
+                }`}
               >
-                <option value={0}>Any</option>
-                <option value={60}>60+</option>
-                <option value={70}>70+</option>
-                <option value={80}>80+</option>
-              </select>
-            </label>
-
-            <label className="flex items-center gap-1 text-xs">
-              <span className={ui.mutedText}>Sort</span>
-              <select
-                aria-label="Sort alerts"
-                className={`rounded-md border px-2 py-1 text-xs ${ui.outlineButton}`}
-                value={sortMode}
-                onChange={(event) =>
-                  setSortMode(event.target.value as typeof sortMode)
-                }
+                Live
+              </button>
+              <button
+                type="button"
+                role="tab"
+                aria-selected={alertTab === "history"}
+                onClick={() => {
+                  setAlertTab("history");
+                  void fetchHistory();
+                }}
+                className={`rounded-md border px-3 py-1.5 text-xs font-medium transition ${
+                  alertTab === "history" ? `${ui.accentText} ${ui.subtlePanel}` : ui.outlineButton
+                }`}
               >
-                <option value="newest">Newest</option>
-                <option value="rr">Highest R:R</option>
-                <option value="conviction">Highest conviction</option>
-              </select>
-            </label>
+                History
+              </button>
+              {alertTab === "history" ? (
+                <button
+                  type="button"
+                  aria-label="Refresh history"
+                  onClick={() => void fetchHistory()}
+                  className={`inline-flex items-center rounded-md border p-1.5 transition ${ui.outlineButton}`}
+                >
+                  <RefreshCw className="size-3" />
+                </button>
+              ) : null}
+              <span className={`font-mono text-xs uppercase tracking-[0.2em] ${ui.mutedText}`}>
+                {alertTab === "live" ? "Realtime" : "Today"}
+              </span>
+            </div>
           </div>
-          <div className="space-y-4">
-            {alerts.length === 0 ? (
-              <EmptyState
-                ui={ui}
-                title="No live alerts"
-                detail="No active Supabase alerts are available right now."
-              />
-            ) : visibleAlerts.length === 0 ? (
-              <EmptyState
-                ui={ui}
-                title="No matching alerts"
-                detail="No alerts match current filters. Loosen the filters to see more."
-              />
-            ) : null}
-            {visibleAlerts.map((alert) => (
-              <AlertCard
-                key={alert.id}
-                alert={alert}
-                isOpened={openedAlertIds.has(alert.id)}
-                isSubmitting={submittingAlertIds.has(alert.id)}
-                onPaperTrade={paperTrade}
-                ui={ui}
-              />
-            ))}
-          </div>
+
+          {alertTab === "live" ? (
+            <div
+              className={`mb-4 flex flex-wrap items-center gap-2 rounded-md border p-2 ${ui.subtlePanel}`}
+            >
+              <div
+                className="flex items-center gap-1"
+                role="group"
+                aria-label="Filter alerts by direction"
+              >
+                {(
+                  [
+                    { id: "all", label: "All" },
+                    { id: "bullish", label: "Bullish" },
+                    { id: "bearish", label: "Bearish" },
+                  ] as const
+                ).map((opt) => {
+                  const active = directionFilter === opt.id;
+                  return (
+                    <button
+                      key={opt.id}
+                      type="button"
+                      onClick={() => setDirectionFilter(opt.id)}
+                      aria-label={`Show ${opt.label.toLowerCase()} alerts`}
+                      aria-pressed={active}
+                      className={`rounded-md border px-2 py-1 text-xs font-medium transition ${
+                        active ? `${ui.accentText} ${ui.subtlePanel}` : ui.outlineButton
+                      }`}
+                    >
+                      {opt.label}
+                    </button>
+                  );
+                })}
+              </div>
+
+              <div
+                className="flex items-center gap-1"
+                role="group"
+                aria-label="Filter alerts by freshness"
+              >
+                {(
+                  [
+                    { id: "all", label: "All ages" },
+                    { id: "fresh", label: "Fresh only" },
+                  ] as const
+                ).map((opt) => {
+                  const active = freshnessFilter === opt.id;
+                  return (
+                    <button
+                      key={opt.id}
+                      type="button"
+                      onClick={() => setFreshnessFilter(opt.id)}
+                      aria-label={`Filter freshness: ${opt.label}`}
+                      aria-pressed={active}
+                      className={`rounded-md border px-2 py-1 text-xs font-medium transition ${
+                        active ? `${ui.accentText} ${ui.subtlePanel}` : ui.outlineButton
+                      }`}
+                    >
+                      {opt.label}
+                    </button>
+                  );
+                })}
+              </div>
+
+              <label className="ml-auto flex items-center gap-1 text-xs">
+                <span className={ui.mutedText}>Min conviction</span>
+                <select
+                  aria-label="Minimum conviction score"
+                  className={`rounded-md border px-2 py-1 text-xs ${ui.outlineButton}`}
+                  value={minConviction}
+                  onChange={(event) =>
+                    setMinConviction(
+                      Number.parseInt(event.target.value, 10) as 0 | 60 | 70 | 80,
+                    )
+                  }
+                >
+                  <option value={0}>Any</option>
+                  <option value={60}>60+</option>
+                  <option value={70}>70+</option>
+                  <option value={80}>80+</option>
+                </select>
+              </label>
+
+              <label className="flex items-center gap-1 text-xs">
+                <span className={ui.mutedText}>Sort</span>
+                <select
+                  aria-label="Sort alerts"
+                  className={`rounded-md border px-2 py-1 text-xs ${ui.outlineButton}`}
+                  value={sortMode}
+                  onChange={(event) =>
+                    setSortMode(event.target.value as typeof sortMode)
+                  }
+                >
+                  <option value="newest">Newest</option>
+                  <option value="rr">Highest R:R</option>
+                  <option value="conviction">Highest conviction</option>
+                </select>
+              </label>
+            </div>
+          ) : null}
+
+          {alertTab === "live" ? (
+            <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
+              {alerts.length === 0 ? (
+                <div className="md:col-span-2">
+                  <EmptyState
+                    ui={ui}
+                    title="No live alerts"
+                    detail="No active Supabase alerts are available right now."
+                  />
+                </div>
+              ) : visibleAlerts.length === 0 ? (
+                <div className="md:col-span-2">
+                  <EmptyState
+                    ui={ui}
+                    title="No matching alerts"
+                    detail="No alerts match current filters. Loosen the filters to see more."
+                  />
+                </div>
+              ) : null}
+              {visibleAlerts.map((alert) => (
+                <AlertCard
+                  key={alert.id}
+                  alert={alert}
+                  isOpened={openedAlertIds.has(alert.id)}
+                  isSubmitting={submittingAlertIds.has(alert.id)}
+                  onPaperTrade={paperTrade}
+                  ui={ui}
+                  isHistory={false}
+                />
+              ))}
+            </div>
+          ) : (
+            <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
+              {historyAlerts.length === 0 ? (
+                <div className="md:col-span-2">
+                  <EmptyState
+                    ui={ui}
+                    title="No history for today"
+                    detail="No expired or invalidated alerts from today."
+                  />
+                </div>
+              ) : null}
+              {historyAlerts.map((alert) => (
+                <AlertCard
+                  key={alert.id}
+                  alert={alert}
+                  isOpened={false}
+                  isSubmitting={false}
+                  onPaperTrade={paperTrade}
+                  ui={ui}
+                  isHistory={true}
+                />
+              ))}
+            </div>
+          )}
         </section>
 
         <aside className="min-w-0">
@@ -511,15 +604,18 @@ function AlertCard({
   isSubmitting,
   onPaperTrade,
   ui,
+  isHistory,
 }: {
   alert: AlertFeedItem;
   isOpened: boolean;
   isSubmitting: boolean;
   onPaperTrade: (alert: AlertFeedItem, quantity: number) => void;
   ui: ThemeClasses;
+  isHistory: boolean;
 }) {
   const bearish = alert.direction === "bearish";
   const [quantity, setQuantity] = useState(1);
+  const [showChart, setShowChart] = useState(false);
   useEffect(() => {
     setQuantity(1);
   }, [alert.id]);
@@ -535,7 +631,7 @@ function AlertCard({
   const blocked = safetyReason !== null;
 
   return (
-    <article className={`rounded-lg border p-4 shadow-2xl ${ui.card}`}>
+    <article className={`rounded-lg border p-4 shadow-2xl ${ui.card} ${isHistory ? "opacity-65" : ""}`}>
       <div className="flex flex-col gap-4 xl:flex-row xl:items-start xl:justify-between">
         <div className="min-w-0">
           <div className="flex flex-wrap items-center gap-2">
@@ -559,6 +655,11 @@ function AlertCard({
               {relativeTime(alert.detected_at)}
               {freshness === "stale" ? " · stale" : null}
             </span>
+            {isHistory ? (
+              <span className={`inline-flex items-center rounded border px-2 py-0.5 text-[10px] font-bold tracking-[0.18em] ${ui.qualityPoor}`}>
+                EXPIRED
+              </span>
+            ) : null}
           </div>
           <h3 className={`mt-3 text-xl font-semibold ${ui.heading}`}>{alert.title}</h3>
           <p className={`mt-2 max-w-3xl text-sm leading-6 ${ui.secondaryText}`}>
@@ -602,32 +703,46 @@ function AlertCard({
         ui={ui}
       />
 
-      <button
-        className={`mt-3 inline-flex h-11 w-full items-center justify-center gap-2 rounded-md text-sm font-semibold transition ${
-          isOpened
-            ? ui.successButton
-            : blocked
-              ? ui.outlineButton + " cursor-not-allowed opacity-70"
-              : ui.paperTradeButton
-        }`}
-        disabled={isSubmitting || isOpened || blocked}
-        onClick={() => onPaperTrade(alert, quantity)}
-        aria-label={
-          blocked
-            ? `Paper trade disabled: ${safetyReason}`
-            : `Paper trade ${alert.symbol} quantity ${quantity}`
-        }
-        title={safetyReason ?? undefined}
-      >
-        {blocked ? <ShieldAlert className="size-4" /> : <Target className="size-4" />}
-        {isOpened
-          ? "Trade Open"
-          : isSubmitting
-            ? "Opening..."
-            : blocked
-              ? "Trade Blocked"
-              : `Paper Trade (qty ${quantity})`}
-      </button>
+      <div className="mt-3 flex items-center gap-2">
+        <button
+          className={`inline-flex h-11 flex-1 items-center justify-center gap-2 rounded-md text-sm font-semibold transition ${
+            isOpened
+              ? ui.successButton
+              : blocked || isHistory
+                ? ui.outlineButton + " cursor-not-allowed opacity-70"
+                : ui.paperTradeButton
+          }`}
+          disabled={isSubmitting || isOpened || blocked || isHistory}
+          onClick={() => onPaperTrade(alert, quantity)}
+          aria-label={
+            isHistory
+              ? "Cannot paper trade an expired alert"
+              : blocked
+                ? `Paper trade disabled: ${safetyReason}`
+                : `Paper trade ${alert.symbol} quantity ${quantity}`
+          }
+          title={isHistory ? "Expired alert" : safetyReason ?? undefined}
+        >
+          {blocked ? <ShieldAlert className="size-4" /> : <Target className="size-4" />}
+          {isOpened
+            ? "Trade Open"
+            : isSubmitting
+              ? "Opening..."
+              : blocked
+                ? "Trade Blocked"
+                : `Paper Trade (qty ${quantity})`}
+        </button>
+        <button
+          type="button"
+          onClick={() => setShowChart((prev) => !prev)}
+          aria-label={showChart ? "Hide chart" : "View chart"}
+          aria-pressed={showChart}
+          className={`inline-flex h-11 items-center gap-1.5 rounded-md border px-3 text-xs font-medium transition ${ui.outlineButton}`}
+        >
+          <BarChart2 className="size-4" />
+          {showChart ? "Hide" : "Chart"}
+        </button>
+      </div>
 
       {blocked && !isOpened ? (
         <p
@@ -637,6 +752,22 @@ function AlertCard({
           {safetyReason}
         </p>
       ) : null}
+
+      <div
+        style={{ maxHeight: showChart ? "320px" : "0px" }}
+        className={`overflow-hidden rounded-md border transition-[max-height] duration-300 ${showChart ? `mt-3 ${ui.subtlePanel}` : "border-transparent"}`}
+      >
+        {showChart ? (
+          <iframe
+            src={`https://www.tradingview.com/widgetsnext/embed/symbol/?symbol=NSE:${alert.symbol}&interval=5&studies=VWAP@tv-basicstudies`}
+            width="100%"
+            height="300"
+            style={{ border: 0 }}
+            allowFullScreen
+            title={`TradingView chart for NSE:${alert.symbol}`}
+          />
+        ) : null}
+      </div>
     </article>
   );
 }
@@ -868,7 +999,7 @@ function PerformanceSummary({
         </span>
       </div>
 
-      <div className="grid grid-cols-3 gap-2">
+      <div className="grid grid-cols-2 gap-2 sm:grid-cols-3">
         <PerfCell
           ui={ui}
           label="Realized"
