@@ -11,8 +11,9 @@ import { getMarketSessionStatus } from "../_shared/market-hours.ts";
 
 const EXCHANGE = "NSE";
 
-// Official Nifty 50 constituent symbols as used by NSE/Angel One
-const NIFTY50_SYMBOLS = [
+// Official Nifty 200 constituent symbols (Nifty 50 + Nifty Next 50 + Nifty Midcap 100)
+const NIFTY200_SYMBOLS = [
+  // Nifty 50
   "ADANIENT", "ADANIPORTS", "APOLLOHOSP", "ASIANPAINT", "AXISBANK",
   "BAJAJ-AUTO", "BAJFINANCE", "BAJAJFINSV", "BPCL", "BHARTIARTL",
   "BRITANNIA", "CIPLA", "COALINDIA", "DIVISLAB", "DRREDDY",
@@ -23,6 +24,31 @@ const NIFTY50_SYMBOLS = [
   "ONGC", "POWERGRID", "RELIANCE", "SBILIFE", "SBIN",
   "SUNPHARMA", "TCS", "TATACONSUM", "TATAMOTORS", "TATASTEEL",
   "TECHM", "TITAN", "ULTRACEMCO", "UPL", "WIPRO",
+  // Nifty Next 50
+  "ADANIGREEN", "ADANITRANS", "AMBUJACEM", "APLAPOLLO", "ATGL",
+  "AUBANK", "BERGEPAINT", "BOSCHLTD", "CANBK", "CHOLAFIN",
+  "DLF", "DMART", "GODREJCP", "GODREJPROP", "HAL",
+  "HAVELLS", "HDFCAMC", "ICICIGI", "ICICIPRULI", "INDHOTEL",
+  "INDUSTOWER", "IRFC", "JSWENERGY", "LICI", "LODHA",
+  "MARICO", "MCDOWELL-N", "MPHASIS", "MUTHOOTFIN", "NAUKRI",
+  "NHPC", "OFSS", "PIDILITIND", "PIIND", "PNB",
+  "RECLTD", "SAIL", "SHREECEM", "SIEMENS", "SRF",
+  "TATAPOWER", "TORNTPHARM", "TRENT", "TVSMOTOR", "VBL",
+  "VEDL", "ZOMATO", "ZYDUSLIFE", "INDIGO", "YESBANK",
+  // Nifty Midcap 100
+  "ABB", "ABCAPITAL", "ABFRL", "ACC", "ALKEM",
+  "ASHOKLEY", "BALKRISIND", "BANDHANBNK", "BATAINDIA", "BEL",
+  "BIOCON", "BLUESTARCO", "CANFINHOME", "CEAT", "CGPOWER",
+  "CROMPTON", "CUMMINSIND", "DABUR", "DEEPAKNTR", "DIXON",
+  "ESCORTS", "EXIDEIND", "FEDERALBNK", "GLENMARK", "GMRINFRA",
+  "GRANULES", "HONAUT", "IDFCFIRSTB", "IGL", "INDIAMART",
+  "JSL", "JUBLFOOD", "KANSAINER", "KARURVYSYA", "KAYNES",
+  "KPITTECH", "LAURUSLABS", "LICHSGFIN", "LINDEINDIA", "LUPIN",
+  "MFSL", "MOTHERSON", "PAGEIND", "PERSISTENT", "PETRONET",
+  "PHOENIXLTD", "PNBHOUSING", "POLYCAB", "RADICO", "RAMCOCEM",
+  "SBICARD", "SOBHA", "STARHEALTH", "SUNDARMFIN", "SUPREMEIND",
+  "SYNGENE", "TATACHEM", "TATAELXSI", "TORNTPOWER", "TRIDENT",
+  "UBL", "UNIONBANK", "VOLTAS", "WHIRLPOOL", "RAYMOND",
 ] as const;
 
 type DbInstrument = {
@@ -242,10 +268,10 @@ Deno.serve(async () => {
 
   const supabase = createServiceClient();
 
-  // Ensure every Nifty 50 symbol has a row in the instruments table.
+  // Ensure every Nifty 200 symbol has a row in the instruments table.
   // Uses DO NOTHING on conflict so existing rows are never overwritten here.
   await supabase.from("instruments").upsert(
-    NIFTY50_SYMBOLS.map((symbol) => ({
+    NIFTY200_SYMBOLS.map((symbol) => ({
       symbol,
       exchange: EXCHANGE,
       name: symbol, // placeholder; overwritten when token is resolved via searchScrip
@@ -257,7 +283,7 @@ Deno.serve(async () => {
     .from("instruments")
     .select("id,symbol,exchange,angel_one_token,previous_day_high,pdh_refreshed_at")
     .eq("exchange", EXCHANGE)
-    .in("symbol", NIFTY50_SYMBOLS as unknown as string[]);
+    .in("symbol", NIFTY200_SYMBOLS as unknown as string[]);
 
   if (instErr) {
     return Response.json({ error: instErr.message }, { status: 500 });

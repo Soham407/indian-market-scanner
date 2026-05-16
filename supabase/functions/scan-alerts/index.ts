@@ -92,13 +92,26 @@ Deno.serve(async () => {
 
   if (alerts.length === 0) return Response.json({ inserted: 0 });
 
+  // Check which are genuinely new (not already in DB)
+  const dedupeKeys = alerts.map((a: Record<string, unknown>) => a.dedupe_key as string);
+  const { data: existing } = await supabase
+    .from("alerts")
+    .select("dedupe_key")
+    .in("dedupe_key", dedupeKeys);
+  const existingKeys = new Set((existing ?? []).map((r: { dedupe_key: string }) => r.dedupe_key));
+  const newAlerts = alerts.filter((a: Record<string, unknown>) => !existingKeys.has(a.dedupe_key as string));
+
   const { error: insertError } = await supabase
     .from("alerts")
     .upsert(alerts, { onConflict: "dedupe_key" });
 
   if (insertError) return Response.json({ error: insertError.message }, { status: 500 });
 
-  return Response.json({ upserted: alerts.length });
+  if (newAlerts.length > 0) {
+    await sendTelegramAlerts(newAlerts);
+  }
+
+  return Response.json({ upserted: alerts.length, new_alerts: newAlerts.length });
 });
 
 // ---------------------------------------------------------------------------
@@ -207,4 +220,62 @@ function buildBullishAlert(inst: Instrument, today: string) {
     },
     expires_at: new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString(),
   };
+}
+
+// ---------------------------------------------------------------------------
+// Telegram notifications — sent only for genuinely new alerts
+// ---------------------------------------------------------------------------
+
+async function sendTelegramAlerts(alerts: Record<string, unknown>[]) {
+  const token = Deno.env.get("TELEGRAM_BOT_TOKEN");
+  const chatId = Deno.env.get("TELEGRAM_CHAT_ID");
+  if (!token || !chatId) return; // not configured — silent skip
+
+  for (const alert of alerts) {
+    try {
+      const dir = alert.direction as string;
+      const symbol = (alert.title as string).split(" ")[0];
+      const entry = alert.current_price as number;
+      const stop = dir === "bearish" ? entry * 1.01 : entry * 0.99;
+      const vwap = alert.vwap as number | null;
+      const conviction = alert.conviction_score as number;
+      const rr = vwap
+        ? Math.abs((dir === "bearish" ? entry - vwap : vwap - entry) / (entry * 0.01))
+        : null;
+
+      const emoji = dir === "bearish" ? "📉" : "📈";
+      const dirLabel = dir === "bearish" ? "SHORT" : "LONG";
+      const patternLabel = dir === "bearish" ? "PDH Trap — failed breakout" : "PDL Bounce — failed breakdown";
+
+      const fmt = (n: number) => `₹${n.toFixed(2)}`;
+      const lines = [
+        `🎯 *MARKET SNIPER ALERT*`,
+        ``,
+        `${emoji} *${dirLabel} — ${symbol}*`,
+        `_${patternLabel}_`,
+        ``,
+        `Entry:      ${fmt(entry)}`,
+        `Stop:       ${fmt(stop)} (1%)`,
+        vwap ? `VWAP (TP):  ${fmt(vwap)}` : `VWAP:       awaiting`,
+        rr ? `R:R:        ${rr.toFixed(2)}:1` : ``,
+        `Conviction: ${conviction}%`,
+        ``,
+        `⏰ Exit within *20 minutes* or at VWAP`,
+      ].filter(l => l !== null);
+
+      const text = lines.join("\n");
+      await fetch(`https://api.telegram.org/bot${token}/sendMessage`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          chat_id: chatId,
+          text,
+          parse_mode: "Markdown",
+          disable_web_page_preview: true,
+        }),
+      });
+    } catch (err) {
+      console.error("[scan-alerts] Telegram notification failed:", err instanceof Error ? err.message : err);
+    }
+  }
 }
