@@ -534,27 +534,17 @@ export function MarketSniperDashboard({
               ))}
             </div>
           ) : (
-            <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+            <div className="flex flex-col gap-2">
               {historyAlerts.length === 0 ? (
-                <div className="md:col-span-2">
-                  <EmptyState
-                    ui={ui}
-                    icon={Clock3}
-                    title="No history for today"
-                    detail="No expired or invalidated alerts from today."
-                  />
-                </div>
+                <EmptyState
+                  ui={ui}
+                  icon={Clock3}
+                  title="No history for today"
+                  detail="No expired or invalidated alerts from today."
+                />
               ) : null}
               {historyAlerts.map((alert) => (
-                <AlertCard
-                  key={alert.id}
-                  alert={alert}
-                  isOpened={false}
-                  isSubmitting={false}
-                  onPaperTrade={paperTrade}
-                  ui={ui}
-                  isHistory={true}
-                />
+                <HistoryAlertRow key={alert.id} alert={alert} ui={ui} />
               ))}
             </div>
           )}
@@ -1178,6 +1168,36 @@ function DataTile({ ui, label, value }: { ui: ThemeClasses; label: string; value
     <div className={`rounded-md border px-3 py-2 ${ui.subtlePanel}`}>
       <div className={`text-xs uppercase tracking-[0.14em] ${ui.mutedText}`}>{label}</div>
       <div className={`mt-1 truncate font-mono text-sm ${ui.heading}`}>{value}</div>
+    </div>
+  );
+}
+
+function HistoryAlertRow({ alert, ui }: { alert: AlertFeedItem; ui: ThemeClasses }) {
+  const bearish = alert.direction === "bearish";
+  const plan = computeTradePlan(alert);
+  return (
+    <div className={`relative flex items-center gap-3 overflow-hidden rounded-lg border px-4 py-3 opacity-60 ${ui.card}`}>
+      <div className={`pointer-events-none absolute inset-y-0 left-0 w-[3px] ${bearish ? "bg-red-500/80" : "bg-emerald-500/80"}`} />
+      <span className={`shrink-0 rounded border px-2 py-0.5 font-mono text-xs ${ui.symbolPill}`}>
+        {alert.symbol}
+      </span>
+      <span className={`inline-flex shrink-0 items-center gap-1 rounded px-2 py-0.5 text-xs font-medium ${bearish ? ui.bearishPill : ui.bullishPill}`}>
+        {bearish ? <ArrowDownRight className="size-3" /> : <ArrowUpRight className="size-3" />}
+        {alert.direction.toUpperCase()}
+      </span>
+      <span className={`min-w-0 flex-1 truncate text-sm font-medium ${ui.heading}`}>{alert.title}</span>
+      {plan.rr !== null && Number.isFinite(plan.rr) ? (
+        <span className={`shrink-0 font-mono text-xs ${ui.mutedText}`}>
+          R:R {plan.rr.toFixed(1)}
+        </span>
+      ) : null}
+      <span className={`shrink-0 font-mono text-sm font-semibold ${ui.accentText}`}>
+        {alert.conviction_score}%
+      </span>
+      <span className={`shrink-0 inline-flex items-center rounded border px-2 py-0.5 text-[10px] font-bold tracking-[0.18em] ${ui.qualityPoor}`}>
+        EXPIRED
+      </span>
+      <span className={`shrink-0 text-xs ${ui.mutedText}`}>{relativeTime(alert.detected_at)}</span>
     </div>
   );
 }
