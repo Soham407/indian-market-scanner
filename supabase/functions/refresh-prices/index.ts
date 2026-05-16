@@ -127,8 +127,11 @@ async function resolveTokens(
 
       await supabase.from("instruments").update(patch).eq("id", inst.id);
       inst.angel_one_token = match.symbolToken;
-    } catch {
-      // Non-fatal: will retry on the next invocation
+    } catch (err) {
+      console.error(
+        `[refresh-prices] token resolution failed for ${inst.symbol}:`,
+        err instanceof Error ? err.message : err,
+      );
     }
 
     // Throttle to respect Angel One rate limits
@@ -204,8 +207,11 @@ async function refreshPreviousDayOhlc(
         .eq("id", inst.id);
 
       updated++;
-    } catch {
-      // Non-fatal; will retry on the next pre-market invocation
+    } catch (err) {
+      console.error(
+        `[refresh-prices] previous-day OHLC refresh failed for ${inst.symbol}:`,
+        err instanceof Error ? err.message : err,
+      );
     }
 
     // Angel One historical API is rate-limited; 150 ms between calls is safe
@@ -325,18 +331,31 @@ Deno.serve(async () => {
 
     // avgPrice / averagePrice: Angel One returns an intraday VWAP approximation.
     // Field name differs across SDK versions; handle both.
-    const vwap = quote.avgPrice ?? quote.averagePrice ?? null;
+    const rawVwap = quote.avgPrice ?? quote.averagePrice ?? null;
+    const rawPrevClose = quote.close ?? null;
+
+    // Sanity-filter optional fields. A zero or null VWAP from a flaky quote
+    // would silently corrupt every downstream alert's take-profit target —
+    // skip the column write instead of poisoning the row.
+    const patch: Record<string, number> = { last_price: quote.ltp };
+    if (typeof rawVwap === "number" && rawVwap > 0) {
+      patch.vwap = rawVwap;
+    } else if (rawVwap !== null) {
+      console.warn(
+        `[refresh-prices] skipping vwap write for ${quote.tradingSymbol}: invalid value ${rawVwap}`,
+      );
+    }
+    if (typeof rawPrevClose === "number" && rawPrevClose > 0) {
+      // `close` in a live FULL quote = previous session's official close price
+      patch.previous_close = rawPrevClose;
+    } else if (rawPrevClose !== null) {
+      console.warn(
+        `[refresh-prices] skipping previous_close write for ${quote.tradingSymbol}: invalid value ${rawPrevClose}`,
+      );
+    }
 
     // Update live price fields. `updated_at` is handled by the DB trigger.
-    await supabase
-      .from("instruments")
-      .update({
-        last_price: quote.ltp,
-        vwap,
-        // `close` in a live FULL quote = previous session's official close price
-        previous_close: quote.close ?? null,
-      })
-      .eq("id", instrumentId);
+    await supabase.from("instruments").update(patch).eq("id", instrumentId);
 
     priceMarks.push({
       instrument_id: instrumentId,
@@ -344,12 +363,15 @@ Deno.serve(async () => {
       source: "angel_one",
     });
 
-    // Keep open shadow trade marks in sync with the live price
+    // Keep open shadow trade marks in sync with the live price.
+    // Skip rows already at this exact price to avoid firing the
+    // updated_at trigger and a realtime broadcast on no-op writes.
     await supabase
       .from("shadow_trades")
       .update({ current_price: quote.ltp })
       .eq("instrument_id", instrumentId)
-      .eq("status", "open");
+      .eq("status", "open")
+      .neq("current_price", quote.ltp);
 
     updatedCount++;
   }
