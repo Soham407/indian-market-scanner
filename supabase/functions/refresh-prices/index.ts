@@ -193,7 +193,7 @@ async function refreshPreviousDayOhlc(
 
       if (candles.length === 0) continue;
 
-      const [, , high, low, close] = candles[candles.length - 1];
+      const [, , high, low, close, volume] = candles[candles.length - 1];
       if (!high) continue;
 
       await supabase
@@ -202,6 +202,7 @@ async function refreshPreviousDayOhlc(
           previous_day_high: high,
           previous_day_low: low,
           previous_close: close,
+          prev_day_volume: typeof volume === "number" && volume > 0 ? volume : null,
           pdh_refreshed_at: new Date().toISOString(),
         })
         .eq("id", inst.id);
@@ -337,7 +338,11 @@ Deno.serve(async () => {
     // Sanity-filter optional fields. A zero or null VWAP from a flaky quote
     // would silently corrupt every downstream alert's take-profit target —
     // skip the column write instead of poisoning the row.
-    const patch: Record<string, number> = { last_price: quote.ltp };
+    const todayIst = new Date(Date.now() + 5.5 * 3600 * 1000)
+      .toISOString()
+      .slice(0, 10);
+
+    const patch: Record<string, number | string> = { last_price: quote.ltp };
     if (typeof rawVwap === "number" && rawVwap > 0) {
       patch.vwap = rawVwap;
     } else if (rawVwap !== null) {
@@ -352,6 +357,16 @@ Deno.serve(async () => {
       console.warn(
         `[refresh-prices] skipping previous_close write for ${quote.tradingSymbol}: invalid value ${rawPrevClose}`,
       );
+    }
+    // Session high and volume reset automatically each day: session_date is the
+    // IST date string written alongside them. scan-alerts checks session_date ===
+    // today before trusting session_high, so yesterday's stale high is never used.
+    if (typeof quote.high === "number" && quote.high > 0) {
+      patch.session_high = quote.high;
+      patch.session_date = todayIst;
+    }
+    if (typeof quote.volume === "number" && quote.volume > 0) {
+      patch.session_volume = quote.volume;
     }
 
     // Update live price fields. `updated_at` is handled by the DB trigger.

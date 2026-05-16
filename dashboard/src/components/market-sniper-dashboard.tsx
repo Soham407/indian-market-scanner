@@ -80,9 +80,8 @@ function computeTradePlan(alert: AlertFeedItem): TradePlan {
   const bearish = alert.direction === "bearish";
   const entry = alert.current_price;
   const vwap = alert.vwap;
-  const stopLoss = bearish
-    ? alert.trigger_price * 1.0015
-    : alert.trigger_price * 0.9985;
+  // 1% stop from entry — matches sl_stop=0.01 in the validated vectorbt backtest.
+  const stopLoss = bearish ? entry * 1.01 : entry * 0.99;
   const profitMargin =
     vwap === null ? null : bearish ? entry - vwap : vwap - entry;
   const riskMargin = bearish ? stopLoss - entry : entry - stopLoss;
