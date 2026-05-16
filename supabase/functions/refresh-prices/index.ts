@@ -365,6 +365,9 @@ Deno.serve(async () => {
       patch.session_high = quote.high;
       patch.session_date = todayIst;
     }
+    if (typeof quote.low === "number" && quote.low > 0) {
+      patch.session_low = quote.low;
+    }
     if (typeof quote.volume === "number" && quote.volume > 0) {
       patch.session_volume = quote.volume;
     }

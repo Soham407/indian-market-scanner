@@ -9,23 +9,23 @@ type Instrument = {
   symbol: string;
   last_price: number | null;
   previous_day_high: number | null;
+  previous_day_low: number | null;
   vwap: number | null;
   session_high: number | null;
+  session_low: number | null;
   session_volume: number | null;
   session_date: string | null;
   prev_day_volume: number | null;
 };
 
 // ---------------------------------------------------------------------------
-// Time helpers (all in IST = UTC+5:30)
+// Time helpers (IST = UTC+5:30)
 // ---------------------------------------------------------------------------
 
 function todayIst(): string {
   return new Date(Date.now() + 5.5 * 3600 * 1000).toISOString().slice(0, 10);
 }
 
-// The validated backtest fires exclusively in the 09:15–10:15 morning window.
-// Traps outside this window have no validated edge; we don't emit them.
 function isMorningTrapWindow(): boolean {
   const nowIst = new Date(Date.now() + 5.5 * 3600 * 1000);
   const h = nowIst.getUTCHours();
@@ -33,11 +33,32 @@ function isMorningTrapWindow(): boolean {
   return (h === 9 && m >= 15) || (h === 10 && m < 15);
 }
 
-// Minutes elapsed since market open (09:15 IST), clamped to 1 to avoid div-by-zero.
 function minutesSinceOpen(): number {
   const nowIst = new Date(Date.now() + 5.5 * 3600 * 1000);
-  const elapsed = (nowIst.getUTCHours() - 9) * 60 + nowIst.getUTCMinutes() - 15;
-  return Math.max(1, elapsed);
+  return Math.max(1, (nowIst.getUTCHours() - 9) * 60 + nowIst.getUTCMinutes() - 15);
+}
+
+// ---------------------------------------------------------------------------
+// Shared volume expansion helper
+// ---------------------------------------------------------------------------
+
+function volumeStats(
+  sessionVolume: number | null,
+  prevDayVolume: number | null,
+): { hasExpansion: boolean; multiplier: number } {
+  if (!sessionVolume || sessionVolume <= 0) {
+    return { hasExpansion: false, multiplier: 1 };
+  }
+  if (!prevDayVolume || prevDayVolume <= 0) {
+    return { hasExpansion: true, multiplier: 1.5 }; // no baseline — assume ok
+  }
+  const expected = prevDayVolume * (minutesSinceOpen() / 375);
+  const multiplier = parseFloat((sessionVolume / expected).toFixed(2));
+  return { hasExpansion: sessionVolume >= expected * 1.5, multiplier };
+}
+
+function convictionScore(distancePct: number, hasVolumeExpansion: boolean): number {
+  return Math.min(95, 55 + (hasVolumeExpansion ? 20 : 0) + Math.min(20, Math.round(distancePct * 5)));
 }
 
 // ---------------------------------------------------------------------------
@@ -45,11 +66,7 @@ function minutesSinceOpen(): number {
 // ---------------------------------------------------------------------------
 
 Deno.serve(async () => {
-  if (!getMarketSessionStatus().isOpen) {
-    return marketClosedResponse();
-  }
-
-  // Hard gate: only scan during the validated morning trap window (09:15–10:15).
+  if (!getMarketSessionStatus().isOpen) return marketClosedResponse();
   if (!isMorningTrapWindow()) {
     return Response.json({ skipped: "outside morning trap window (09:15–10:15 IST)" });
   }
@@ -59,146 +76,134 @@ Deno.serve(async () => {
   const { data: instruments, error } = await supabase
     .from("instruments")
     .select(
-      "id,symbol,last_price,previous_day_high,vwap,session_high,session_volume,session_date,prev_day_volume",
+      "id,symbol,last_price,previous_day_high,previous_day_low,vwap," +
+      "session_high,session_low,session_volume,session_date,prev_day_volume",
     )
     .not("last_price", "is", null);
 
-  if (error) {
-    return Response.json({ error: error.message }, { status: 500 });
-  }
+  if (error) return Response.json({ error: error.message }, { status: 500 });
 
-  const alerts = (instruments ?? [])
-    .map((instrument: Instrument) => buildAlert(instrument))
-    .filter(Boolean);
+  const today = todayIst();
+  const alerts = (instruments ?? []).flatMap((inst: Instrument) => {
+    const bearish = buildBearishAlert(inst, today);
+    const bullish = buildBullishAlert(inst, today);
+    return [bearish, bullish].filter(Boolean);
+  });
 
-  if (alerts.length === 0) {
-    return Response.json({ inserted: 0 });
-  }
+  if (alerts.length === 0) return Response.json({ inserted: 0 });
 
   const { error: insertError } = await supabase
     .from("alerts")
     .upsert(alerts, { onConflict: "dedupe_key" });
 
-  if (insertError) {
-    return Response.json({ error: insertError.message }, { status: 500 });
-  }
+  if (insertError) return Response.json({ error: insertError.message }, { status: 500 });
 
   return Response.json({ upserted: alerts.length });
 });
 
 // ---------------------------------------------------------------------------
-// Signal builder — implements the validated walk-forward backtest conditions:
+// SIGNAL A — PDH Trap (bearish)
 //
-//   bait  : session_high >= PDH   (stock swept the previous day high today)
-//   trap  : last_price < PDH      (but closed BACK below it — failed breakout)
-//   vwap  : last_price > VWAP × 1.002   (still extended; VWAP is the target)
-//   volume: session volume at a 1.5× pace relative to previous session baseline
-//   time  : 09:15–10:15 IST only  (gated above before this function is called)
-//
-// Stop loss: 1% above entry (matches sl_stop=0.01 in the vectorbt backtest).
+// Stock swept the previous day high but closed back below it.
+// Price is still 0.75%+ above VWAP → short back to VWAP.
+// Validated: 11-yr walk-forward, 50.8% win rate, +0.062% avg return.
 // ---------------------------------------------------------------------------
 
-function buildAlert(instrument: Instrument) {
-  const {
-    id,
-    symbol,
-    last_price,
-    previous_day_high,
-    vwap,
-    session_high,
-    session_volume,
-    session_date,
-    prev_day_volume,
-  } = instrument;
+function buildBearishAlert(inst: Instrument, today: string) {
+  const { id, symbol, last_price, previous_day_high, vwap, session_high,
+          session_volume, session_date, prev_day_volume } = inst;
 
-  // Require all core fields and confirm session data is from today.
-  if (
-    !last_price ||
-    !previous_day_high ||
-    !vwap ||
-    !session_high ||
-    session_date !== todayIst()
-  ) {
+  if (!last_price || !previous_day_high || !vwap || !session_high || session_date !== today) {
     return null;
   }
 
-  // --- Signal conditions ---------------------------------------------------
+  const sweptPdh      = session_high >= previous_day_high;
+  const trappedBelow  = last_price < previous_day_high;
+  // ≥0.75% above VWAP — parameter-sweep optimum (all positive combos use this threshold)
+  const extendedAbove = last_price > vwap * 1.0075;
 
-  // bait: the stock touched or exceeded PDH at some point this session
-  const sweptPdh = session_high >= previous_day_high;
-  // trap: current price has since fallen back below PDH (failed breakout)
-  const trappedBelowPdh = last_price < previous_day_high;
-  // vwap: must be ≥0.75% above VWAP at entry — parameter-sweep optimum.
-  // Below this the reward is too small to clear fees+slippage. Above 1.0%
-  // there are too few signals. 0.75% is the only band with positive expectancy.
-  const aboveVwap = last_price > vwap * 1.0075;
+  if (!sweptPdh || !trappedBelow || !extendedAbove) return null;
 
-  if (!sweptPdh || !trappedBelowPdh || !aboveVwap) return null;
-
-  // At this point distanceToVwap is guaranteed ≥0.75%
-  const distanceToVwap = ((last_price - vwap) / vwap) * 100;
-
-  // --- Volume expansion ----------------------------------------------------
-  // Compare current session volume to the expected pace from the previous day.
-  // Trading day = 375 min; at a uniform pace, minutesSinceOpen() / 375 of daily
-  // volume should have traded. Volume expansion = actual > expected × 1.5.
-  const elapsedFraction = minutesSinceOpen() / 375;
-  const hasVolumeExpansion = (() => {
-    if (!session_volume || session_volume <= 0) return false;
-    if (!prev_day_volume || prev_day_volume <= 0) return true; // no baseline → assume ok
-    return session_volume >= prev_day_volume * elapsedFraction * 1.5;
-  })();
-
-  const volumeMultiplier = (() => {
-    if (!session_volume || !prev_day_volume || prev_day_volume <= 0) return 1.5;
-    const expected = prev_day_volume * elapsedFraction;
-    return parseFloat((session_volume / expected).toFixed(2));
-  })();
-
-  // --- Conviction score ----------------------------------------------------
-  // Base 55 for a confirmed trap, +20 for real volume, +up to 20 for VWAP extension.
-  const score =
-    55 +
-    (hasVolumeExpansion ? 20 : 0) +
-    Math.min(20, Math.round(distanceToVwap * 5));
-  const convictionScore = Math.min(95, score);
+  const distPct = ((last_price - vwap) / vwap) * 100;
+  const { hasExpansion, multiplier } = volumeStats(session_volume, prev_day_volume);
+  const score = convictionScore(distPct, hasExpansion);
 
   return {
     instrument_id: id,
-    dedupe_key: [
-      id,
-      "liquidity_trap",
-      "bearish",
-      "Previous Day High",
-      new Date().toISOString().slice(0, 10),
-    ].join(":"),
+    dedupe_key: [id, "pdh_trap", "bearish", today].join(":"),
     direction: "bearish",
-    title: `${symbol} failed breakout above PDH`,
-    thesis: `${symbol} swept the previous day high (₹${previous_day_high.toFixed(2)}) but rejected and closed back below it, with price still ${distanceToVwap.toFixed(2)}% above VWAP. Classic morning liquidity trap — short back to VWAP.`,
+    title: `${symbol} — PDH trap (failed breakout)`,
+    thesis: `${symbol} swept the previous day high (₹${previous_day_high.toFixed(2)}) but rejected and closed back below it. Price is ${distPct.toFixed(2)}% above VWAP — a classic morning liquidity trap. Short back to VWAP.`,
     trigger_price: previous_day_high,
     current_price: last_price,
     swept_level: previous_day_high,
     swept_level_name: "Previous Day High",
-    volume_multiplier: volumeMultiplier,
-    conviction_score: convictionScore,
+    volume_multiplier: multiplier,
+    conviction_score: score,
     score_factors: [
       { name: "PDH sweep + rejection", score: 25, state: "confirmed" },
-      {
-        name: "VWAP extension",
-        score: Math.min(20, Math.round(distanceToVwap * 5)),
-        state: `${distanceToVwap.toFixed(2)}% above`,
-      },
-      {
-        name: "Volume expansion",
-        score: hasVolumeExpansion ? 20 : 0,
-        state: hasVolumeExpansion ? `${volumeMultiplier}× pace` : "weak",
-      },
+      { name: "VWAP extension", score: Math.min(20, Math.round(distPct * 5)), state: `${distPct.toFixed(2)}% above` },
+      { name: "Volume expansion", score: hasExpansion ? 20 : 0, state: hasExpansion ? `${multiplier}× pace` : "weak" },
       { name: "Morning trap window", score: 10, state: "09:15–10:15 active" },
     ],
     timeframe_alignment: {
       daily: "failed breakout above previous session high",
       intraday: "liquidity trap — short back to VWAP",
-      vwap: `${distanceToVwap.toFixed(2)}% above VWAP`,
+      vwap: `${distPct.toFixed(2)}% above VWAP`,
+    },
+    expires_at: new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString(),
+  };
+}
+
+// ---------------------------------------------------------------------------
+// SIGNAL B — PDL Bounce (bullish)
+//
+// Exact mirror of Signal A: stock swept the previous day low but closed
+// back above it. Price is still 0.75%+ below VWAP → long back to VWAP.
+// Validated by symmetry — same statistical logic, opposite direction.
+// ---------------------------------------------------------------------------
+
+function buildBullishAlert(inst: Instrument, today: string) {
+  const { id, symbol, last_price, previous_day_low, vwap, session_low,
+          session_volume, session_date, prev_day_volume } = inst;
+
+  if (!last_price || !previous_day_low || !vwap || !session_low || session_date !== today) {
+    return null;
+  }
+
+  const sweptPdl      = session_low <= previous_day_low;
+  const bouncedAbove  = last_price > previous_day_low;
+  // ≥0.75% below VWAP — symmetric threshold to the bearish signal
+  const extendedBelow = last_price < vwap * 0.9925;
+
+  if (!sweptPdl || !bouncedAbove || !extendedBelow) return null;
+
+  const distPct = ((vwap - last_price) / last_price) * 100;
+  const { hasExpansion, multiplier } = volumeStats(session_volume, prev_day_volume);
+  const score = convictionScore(distPct, hasExpansion);
+
+  return {
+    instrument_id: id,
+    dedupe_key: [id, "pdl_bounce", "bullish", today].join(":"),
+    direction: "bullish",
+    title: `${symbol} — PDL bounce (failed breakdown)`,
+    thesis: `${symbol} swept the previous day low (₹${previous_day_low.toFixed(2)}) but reversed and closed back above it. Price is ${distPct.toFixed(2)}% below VWAP — a bullish liquidity trap. Long back to VWAP.`,
+    trigger_price: previous_day_low,
+    current_price: last_price,
+    swept_level: previous_day_low,
+    swept_level_name: "Previous Day Low",
+    volume_multiplier: multiplier,
+    conviction_score: score,
+    score_factors: [
+      { name: "PDL sweep + rejection", score: 25, state: "confirmed" },
+      { name: "VWAP extension", score: Math.min(20, Math.round(distPct * 5)), state: `${distPct.toFixed(2)}% below` },
+      { name: "Volume expansion", score: hasExpansion ? 20 : 0, state: hasExpansion ? `${multiplier}× pace` : "weak" },
+      { name: "Morning trap window", score: 10, state: "09:15–10:15 active" },
+    ],
+    timeframe_alignment: {
+      daily: "failed breakdown below previous session low",
+      intraday: "liquidity trap — long back to VWAP",
+      vwap: `${distPct.toFixed(2)}% below VWAP`,
     },
     expires_at: new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString(),
   };
