@@ -121,6 +121,16 @@ export function MarketSniperDashboard({
   const [openedAlertIds, setOpenedAlertIds] = useState<Set<string>>(
     () => new Set(),
   );
+  const [directionFilter, setDirectionFilter] = useState<
+    "all" | "bullish" | "bearish"
+  >("all");
+  const [freshnessFilter, setFreshnessFilter] = useState<"all" | "fresh">(
+    "all",
+  );
+  const [minConviction, setMinConviction] = useState<0 | 60 | 70 | 80>(0);
+  const [sortMode, setSortMode] = useState<"newest" | "rr" | "conviction">(
+    "newest",
+  );
   // Ref-based in-flight gate: state setters batch, so two clicks in the
   // same tick both pass the Set check and double-submit the RPC.
   const inFlightAlertIds = useRef<Set<string>>(new Set());
@@ -209,6 +219,41 @@ export function MarketSniperDashboard({
         )
       : 0;
 
+  const visibleAlerts = (() => {
+    const filtered = alerts.filter((alert) => {
+      if (directionFilter !== "all" && alert.direction !== directionFilter) {
+        return false;
+      }
+      if (
+        freshnessFilter === "fresh" &&
+        classifyFreshness(alert.detected_at) !== "fresh"
+      ) {
+        return false;
+      }
+      if (alert.conviction_score < minConviction) {
+        return false;
+      }
+      return true;
+    });
+
+    if (sortMode === "conviction") {
+      return [...filtered].sort(
+        (a, b) => b.conviction_score - a.conviction_score,
+      );
+    }
+    if (sortMode === "rr") {
+      return [...filtered].sort((a, b) => {
+        const ra = computeTradePlan(a).rr ?? -Infinity;
+        const rb = computeTradePlan(b).rr ?? -Infinity;
+        return rb - ra;
+      });
+    }
+    return [...filtered].sort(
+      (a, b) =>
+        new Date(b.detected_at).getTime() - new Date(a.detected_at).getTime(),
+    );
+  })();
+
   async function paperTrade(alert: AlertFeedItem, quantity: number) {
     if (inFlightAlertIds.current.has(alert.id) || openedAlertIds.has(alert.id)) {
       return;
@@ -289,6 +334,103 @@ export function MarketSniperDashboard({
               Realtime
             </span>
           </div>
+          <div
+            className={`mb-4 flex flex-wrap items-center gap-2 rounded-md border p-2 ${ui.subtlePanel}`}
+          >
+            <div
+              className="flex items-center gap-1"
+              role="group"
+              aria-label="Filter alerts by direction"
+            >
+              {(
+                [
+                  { id: "all", label: "All" },
+                  { id: "bullish", label: "Bullish" },
+                  { id: "bearish", label: "Bearish" },
+                ] as const
+              ).map((opt) => {
+                const active = directionFilter === opt.id;
+                return (
+                  <button
+                    key={opt.id}
+                    type="button"
+                    onClick={() => setDirectionFilter(opt.id)}
+                    aria-label={`Show ${opt.label.toLowerCase()} alerts`}
+                    aria-pressed={active}
+                    className={`rounded-md border px-2 py-1 text-xs font-medium transition ${
+                      active ? `${ui.accentText} ${ui.subtlePanel}` : ui.outlineButton
+                    }`}
+                  >
+                    {opt.label}
+                  </button>
+                );
+              })}
+            </div>
+
+            <div
+              className="flex items-center gap-1"
+              role="group"
+              aria-label="Filter alerts by freshness"
+            >
+              {(
+                [
+                  { id: "all", label: "All ages" },
+                  { id: "fresh", label: "Fresh only" },
+                ] as const
+              ).map((opt) => {
+                const active = freshnessFilter === opt.id;
+                return (
+                  <button
+                    key={opt.id}
+                    type="button"
+                    onClick={() => setFreshnessFilter(opt.id)}
+                    aria-label={`Filter freshness: ${opt.label}`}
+                    aria-pressed={active}
+                    className={`rounded-md border px-2 py-1 text-xs font-medium transition ${
+                      active ? `${ui.accentText} ${ui.subtlePanel}` : ui.outlineButton
+                    }`}
+                  >
+                    {opt.label}
+                  </button>
+                );
+              })}
+            </div>
+
+            <label className="ml-auto flex items-center gap-1 text-xs">
+              <span className={ui.mutedText}>Min conviction</span>
+              <select
+                aria-label="Minimum conviction score"
+                className={`rounded-md border px-2 py-1 text-xs ${ui.outlineButton}`}
+                value={minConviction}
+                onChange={(event) =>
+                  setMinConviction(
+                    Number.parseInt(event.target.value, 10) as 0 | 60 | 70 | 80,
+                  )
+                }
+              >
+                <option value={0}>Any</option>
+                <option value={60}>60+</option>
+                <option value={70}>70+</option>
+                <option value={80}>80+</option>
+              </select>
+            </label>
+
+            <label className="flex items-center gap-1 text-xs">
+              <span className={ui.mutedText}>Sort</span>
+              <select
+                aria-label="Sort alerts"
+                className={`rounded-md border px-2 py-1 text-xs ${ui.outlineButton}`}
+                value={sortMode}
+                onChange={(event) =>
+                  setSortMode(event.target.value as typeof sortMode)
+                }
+              >
+                <option value="newest">Newest</option>
+                <option value="rr">Highest R:R</option>
+                <option value="conviction">Highest conviction</option>
+              </select>
+            </label>
+          </div>
           <div className="space-y-4">
             {alerts.length === 0 ? (
               <EmptyState
@@ -296,8 +438,14 @@ export function MarketSniperDashboard({
                 title="No live alerts"
                 detail="No active Supabase alerts are available right now."
               />
+            ) : visibleAlerts.length === 0 ? (
+              <EmptyState
+                ui={ui}
+                title="No matching alerts"
+                detail="No alerts match current filters. Loosen the filters to see more."
+              />
             ) : null}
-            {alerts.map((alert) => (
+            {visibleAlerts.map((alert) => (
               <AlertCard
                 key={alert.id}
                 alert={alert}
@@ -338,13 +486,21 @@ export function MarketSniperDashboard({
       </div>
 
       {message ? (
-        <button
-          className={`fixed bottom-4 left-1/2 flex max-w-[calc(100vw-2rem)] -translate-x-1/2 items-center gap-3 rounded-md border px-4 py-3 text-left text-sm shadow-2xl ${ui.toast}`}
-          onClick={() => setMessage(null)}
+        <div
+          role="status"
+          aria-live="polite"
+          className="fixed bottom-4 left-1/2 -translate-x-1/2"
         >
-          <span>{message}</span>
-          <X className={`size-4 ${ui.mutedText}`} />
-        </button>
+          <button
+            type="button"
+            className={`flex max-w-[calc(100vw-2rem)] items-center gap-3 rounded-md border px-4 py-3 text-left text-sm shadow-2xl ${ui.toast}`}
+            onClick={() => setMessage(null)}
+            aria-label={`Dismiss notification: ${message}`}
+          >
+            <span>{message}</span>
+            <X className={`size-4 ${ui.mutedText}`} aria-hidden="true" />
+          </button>
+        </div>
       ) : null}
     </>
   );
@@ -365,6 +521,9 @@ function AlertCard({
 }) {
   const bearish = alert.direction === "bearish";
   const [quantity, setQuantity] = useState(1);
+  useEffect(() => {
+    setQuantity(1);
+  }, [alert.id]);
   const freshness = classifyFreshness(alert.detected_at);
   const freshnessClass =
     freshness === "fresh"

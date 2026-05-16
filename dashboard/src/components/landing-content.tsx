@@ -65,7 +65,11 @@ export function LandingContent({
     const vh = window.innerHeight;
     el.querySelectorAll<HTMLElement>(".ms-reveal").forEach((node) => {
       const rect = node.getBoundingClientRect();
-      if (rect.top < vh * 0.9 && rect.bottom > 0) {
+      // Mark currently-visible elements AND already-passed ones (rect.bottom < 0):
+      // after a theme toggle, scrolled-past elements would otherwise stay hidden
+      // until the IntersectionObserver re-fires, leaving blank space if the user
+      // scrolls back up.
+      if (rect.bottom < 0 || (rect.top < vh * 0.9 && rect.bottom > 0)) {
         node.classList.add("is-revealed");
       }
     });
@@ -85,6 +89,52 @@ export function LandingContent({
 
     return () => observer.disconnect();
   }, [theme]);
+
+  // Pause the chart background when the tab is hidden OR the bg layer is
+  // scrolled out of view. Saves CPU/GPU on long pages and inactive tabs.
+  useEffect(() => {
+    const root = rootRef.current;
+    if (!root) return;
+    const bg = root.querySelector<HTMLElement>(".ms-bg-layer");
+    if (!bg) return;
+
+    let isVisible =
+      typeof document === "undefined" || document.visibilityState !== "hidden";
+    let isIntersecting = true;
+
+    const apply = () => {
+      if (isVisible && isIntersecting) {
+        bg.classList.remove("ms-bg-paused");
+      } else {
+        bg.classList.add("ms-bg-paused");
+      }
+    };
+
+    const onVisibility = () => {
+      isVisible = document.visibilityState !== "hidden";
+      apply();
+    };
+
+    document.addEventListener("visibilitychange", onVisibility);
+
+    const observer = new IntersectionObserver(
+      (entries) => {
+        for (const entry of entries) {
+          isIntersecting = entry.isIntersecting;
+        }
+        apply();
+      },
+      { threshold: 0 },
+    );
+    observer.observe(bg);
+
+    apply();
+
+    return () => {
+      document.removeEventListener("visibilitychange", onVisibility);
+      observer.disconnect();
+    };
+  }, []);
 
   return (
     <div ref={rootRef} className="ms-landing relative" data-ms-theme={theme}>

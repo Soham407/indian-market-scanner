@@ -22,8 +22,7 @@ Deno.serve(async () => {
   const { data: instruments, error } = await supabase
     .from("instruments")
     .select("id,symbol,last_price,previous_day_high,vwap")
-    .not("last_price", "is", null)
-    .limit(50);
+    .not("last_price", "is", null);
 
   if (error) {
     return Response.json({ error: error.message }, { status: 500 });

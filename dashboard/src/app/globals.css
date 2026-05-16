@@ -180,6 +180,14 @@ body {
 .ms-drift { animation: ms-drift 6s ease-in-out infinite; }
 .ms-glow  { animation: ms-glow 4.5s ease-in-out infinite; }
 
+/* Pause expensive background animations when the bg layer is offscreen
+   or the tab is hidden. Toggled imperatively from LandingContent. */
+.ms-bg-paused .ms-candle-drift,
+.ms-bg-paused .ms-candle-flash,
+.ms-bg-paused .ms-sweep-marker {
+  animation-play-state: paused;
+}
+
 .ms-reveal {
   opacity: 0;
   transform: translateY(24px);

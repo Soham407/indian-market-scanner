@@ -29,7 +29,13 @@ export function LandingPage() {
     configured ? "checking" : "unconfigured",
   );
   const [userId, setUserId] = useState<string | null>(null);
-  const [theme, setTheme] = useState<Theme>("dark");
+  const [theme, setTheme] = useState<Theme>(() => {
+    if (typeof window === "undefined") {
+      return "dark";
+    }
+    const attr = document.documentElement.dataset.msTheme;
+    return attr === "light" ? "light" : "dark";
+  });
   const [signInOpen, setSignInOpen] = useState(false);
   const [signInEmail, setSignInEmail] = useState("");
   const [signInError, setSignInError] = useState<string | null>(null);
@@ -38,25 +44,17 @@ export function LandingPage() {
   const [signInSentTo, setSignInSentTo] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   const supabase = useMemo(() => createBrowserClient(), []);
-  const ui = getThemeClasses(theme);
-
-  useEffect(() => {
-    queueMicrotask(() => {
-      const storedTheme = window.localStorage.getItem("market-sniper-theme");
-      if (storedTheme === "dark" || storedTheme === "light") {
-        setTheme(storedTheme);
-        return;
-      }
-      setTheme(
-        window.matchMedia("(prefers-color-scheme: light)").matches ? "light" : "dark",
-      );
-    });
-  }, []);
+  const ui = useMemo(() => getThemeClasses(theme), [theme]);
 
   function toggleTheme() {
     setTheme((current) => {
       const next = current === "dark" ? "light" : "dark";
-      window.localStorage.setItem("market-sniper-theme", next);
+      try {
+        window.localStorage.setItem("market-sniper-theme", next);
+      } catch {
+        // localStorage may throw in private browsing — non-fatal.
+      }
+      document.documentElement.dataset.msTheme = next;
       return next;
     });
   }
