@@ -757,7 +757,7 @@ function ExecutionPlan({
             </span>
           </div>
           <div className={`mt-1 text-[10px] uppercase tracking-[0.14em] ${ui.mutedText}`}>
-            0.15% trigger buffer
+            1% above entry · exit within 20 min
           </div>
         </div>
       </div>

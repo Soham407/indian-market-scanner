@@ -128,11 +128,14 @@ function buildAlert(instrument: Instrument) {
   const sweptPdh = session_high >= previous_day_high;
   // trap: current price has since fallen back below PDH (failed breakout)
   const trappedBelowPdh = last_price < previous_day_high;
-  // vwap: still meaningfully extended above VWAP (0.2% threshold from backtest)
-  const aboveVwap = last_price > vwap * 1.002;
+  // vwap: must be ≥0.75% above VWAP at entry — parameter-sweep optimum.
+  // Below this the reward is too small to clear fees+slippage. Above 1.0%
+  // there are too few signals. 0.75% is the only band with positive expectancy.
+  const aboveVwap = last_price > vwap * 1.0075;
 
   if (!sweptPdh || !trappedBelowPdh || !aboveVwap) return null;
 
+  // At this point distanceToVwap is guaranteed ≥0.75%
   const distanceToVwap = ((last_price - vwap) / vwap) * 100;
 
   // --- Volume expansion ----------------------------------------------------
