@@ -4,6 +4,7 @@ import {
   ArrowDownRight,
   ArrowUpRight,
   BellRing,
+  Check,
   Clock3,
   Gauge,
   Receipt,
@@ -11,6 +12,7 @@ import {
   Target,
   TrendingDown,
   TrendingUp,
+  Trophy,
   WalletCards,
   X,
 } from "lucide-react";
@@ -273,7 +275,10 @@ export function MarketSniperDashboard({
             </div>
             <span className={`text-sm ${ui.mutedText}`}>{openTrades.length} open</span>
           </div>
-          <div className="space-y-3">
+
+          <PerformanceSummary trades={trades} ui={ui} />
+
+          <div className="mt-3 space-y-3">
             {trades.length === 0 ? (
               <EmptyState
                 ui={ui}
@@ -369,20 +374,22 @@ function AlertCard({
         <DataTile ui={ui} label="Volume" value={`${alert.volume_multiplier}x`} />
       </div>
 
-      <div className="mt-5 grid gap-2 md:grid-cols-2">
-        {alert.score_factors.map((factor) => (
-          <div
-            key={`${alert.id}-${factor.name}`}
-            className={`flex items-center justify-between rounded-md border px-3 py-2 ${ui.subtlePanel}`}
-          >
-            <div>
-              <div className={`text-sm ${ui.heading}`}>{factor.name}</div>
-              <div className={`text-xs ${ui.mutedText}`}>{factor.state}</div>
-            </div>
-            <span className={`font-mono text-sm ${ui.accentText}`}>+{factor.score}</span>
-          </div>
-        ))}
-      </div>
+      {alert.score_factors.length > 0 ? (
+        <div
+          className={`mt-4 flex flex-wrap items-center gap-x-4 gap-y-1.5 text-xs ${ui.secondaryText}`}
+        >
+          {alert.score_factors.map((factor) => (
+            <span
+              key={`${alert.id}-${factor.name}`}
+              className="inline-flex items-center gap-1.5"
+            >
+              <Check className={`size-3.5 ${ui.accentText}`} />
+              <span className={ui.heading}>{factor.name}</span>
+              <span className={ui.mutedText}>· {factor.state}</span>
+            </span>
+          ))}
+        </div>
+      ) : null}
 
       <ExecutionPlan
         alert={alert}
@@ -609,6 +616,97 @@ function Conviction({ score, ui }: { score: number; ui: ThemeClasses }) {
           <Gauge className="size-2.5" />
           Score
         </div>
+      </div>
+    </div>
+  );
+}
+
+function PerformanceSummary({
+  trades,
+  ui,
+}: {
+  trades: ShadowTradePosition[];
+  ui: ThemeClasses;
+}) {
+  const closed = trades.filter((trade) => trade.status === "closed");
+  const totalClosed = closed.length;
+  const wins = closed.filter((trade) => trade.unrealized_pnl > 0).length;
+  const losses = closed.filter((trade) => trade.unrealized_pnl < 0).length;
+  const realized = closed.reduce((sum, trade) => sum + trade.unrealized_pnl, 0);
+  const winRate = totalClosed > 0 ? Math.round((wins / totalClosed) * 100) : null;
+
+  return (
+    <div className={`rounded-lg border p-3 ${ui.card}`}>
+      <div className="mb-2 flex items-center justify-between">
+        <div className="flex items-center gap-2">
+          <Trophy className={`size-3.5 ${ui.accentText}`} />
+          <span
+            className={`font-mono text-[10px] uppercase tracking-[0.22em] ${ui.mutedText}`}
+          >
+            Performance
+          </span>
+        </div>
+        <span className={`text-[11px] ${ui.mutedText}`}>
+          {totalClosed > 0 ? `${totalClosed} closed` : "no closed trades yet"}
+        </span>
+      </div>
+
+      <div className="grid grid-cols-3 gap-2">
+        <PerfCell
+          ui={ui}
+          label="Realized"
+          value={totalClosed > 0 ? currencyFormat.format(realized) : "—"}
+          tone={realized >= 0 ? "positive" : "negative"}
+        />
+        <PerfCell
+          ui={ui}
+          label="Win rate"
+          value={winRate !== null ? `${winRate}%` : "—"}
+          tone={
+            winRate === null
+              ? "neutral"
+              : winRate >= 50
+                ? "positive"
+                : "negative"
+          }
+        />
+        <PerfCell
+          ui={ui}
+          label="W / L"
+          value={totalClosed > 0 ? `${wins} / ${losses}` : "—"}
+          tone="neutral"
+        />
+      </div>
+    </div>
+  );
+}
+
+function PerfCell({
+  ui,
+  label,
+  value,
+  tone,
+}: {
+  ui: ThemeClasses;
+  label: string;
+  value: string;
+  tone: "neutral" | "positive" | "negative";
+}) {
+  const toneClass =
+    tone === "positive"
+      ? ui.positiveText
+      : tone === "negative"
+        ? ui.negativeText
+        : ui.heading;
+  return (
+    <div className={`rounded-md border px-2.5 py-2 ${ui.subtlePanel}`}>
+      <div
+        className={`text-[10px] uppercase tracking-[0.14em] ${ui.mutedText}`}
+      >
+        {label}
+      </div>
+      <div className={`mt-1 truncate font-mono text-sm font-semibold ${toneClass}`}>
+        {value}
       </div>
     </div>
   );

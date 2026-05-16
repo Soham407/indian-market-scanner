@@ -1,15 +1,6 @@
 "use client";
 
-import {
-  Crosshair,
-  LogIn,
-  LogOut,
-  Moon,
-  ShieldCheck,
-  Sun,
-  X,
-} from "lucide-react";
-import type { ReactNode } from "react";
+import { Crosshair, LogIn, LogOut, Moon, Sun, X } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import { createBrowserClient, isSupabaseConfigured } from "@/lib/supabase/client";
 import { getThemeClasses, type Theme, type ThemeClasses } from "@/lib/theme";
@@ -190,11 +181,6 @@ export function LandingPage() {
                 {theme === "dark" ? <Sun className="size-4" /> : <Moon className="size-4" />}
                 {theme === "dark" ? "Light" : "Dark"}
               </button>
-              <StatusPill
-                icon={<ShieldCheck className="size-4" />}
-                label={authLabel(authState)}
-                ui={ui}
-              />
               {isSignedIn ? (
                 <button
                   className={`inline-flex h-10 items-center gap-2 rounded-md border px-4 text-sm font-semibold transition ${ui.outlineButton}`}
@@ -252,25 +238,6 @@ export function LandingPage() {
         />
       ) : null}
     </main>
-  );
-}
-
-function StatusPill({
-  icon,
-  label,
-  ui,
-}: {
-  icon: ReactNode;
-  label: string;
-  ui: ThemeClasses;
-}) {
-  return (
-    <div
-      className={`inline-flex h-10 items-center gap-2 rounded-md border px-3 text-sm ${ui.outlineButton}`}
-    >
-      {icon}
-      {label}
-    </div>
   );
 }
 
@@ -366,15 +333,3 @@ function SignInModal({
   );
 }
 
-function authLabel(authState: AuthState) {
-  if (authState === "signed-in") {
-    return "RLS active";
-  }
-  if (authState === "unconfigured") {
-    return "Supabase not configured";
-  }
-  if (authState === "checking") {
-    return "Checking auth";
-  }
-  return "Sign in required";
-}
