@@ -4,10 +4,11 @@ import {
   ArrowDownRight,
   ArrowUpRight,
   BarChart2,
+  BellOff,
   BellRing,
   Check,
   Clock3,
-  Gauge,
+  type LucideIcon,
   Receipt,
   RefreshCw,
   ShieldAlert,
@@ -351,32 +352,38 @@ export function MarketSniperDashboard({
               <BellRing className={`size-5 ${ui.accentText}`} />
               <h2 className="text-lg font-semibold">Alert Feed</h2>
             </div>
-            <div className="flex flex-wrap items-center gap-1" role="tablist" aria-label="Alert feed tabs">
-              <button
-                type="button"
-                role="tab"
-                aria-selected={alertTab === "live"}
-                onClick={() => setAlertTab("live")}
-                className={`rounded-md border px-3 py-1.5 text-xs font-medium transition ${
-                  alertTab === "live" ? `${ui.accentText} ${ui.subtlePanel}` : ui.outlineButton
-                }`}
+            <div className="flex items-center gap-2">
+              <div
+                role="tablist"
+                aria-label="Alert feed tabs"
+                className={`flex rounded-lg border p-0.5 ${ui.subtlePanel}`}
               >
-                Live
-              </button>
-              <button
-                type="button"
-                role="tab"
-                aria-selected={alertTab === "history"}
-                onClick={() => {
-                  setAlertTab("history");
-                  void fetchHistory();
-                }}
-                className={`rounded-md border px-3 py-1.5 text-xs font-medium transition ${
-                  alertTab === "history" ? `${ui.accentText} ${ui.subtlePanel}` : ui.outlineButton
-                }`}
-              >
-                History
-              </button>
+                <button
+                  type="button"
+                  role="tab"
+                  aria-selected={alertTab === "live"}
+                  onClick={() => setAlertTab("live")}
+                  className={`rounded-md px-3 py-1 text-xs font-medium transition ${
+                    alertTab === "live" ? `${ui.card} ${ui.accentText} shadow-sm` : ui.mutedText
+                  }`}
+                >
+                  Live
+                </button>
+                <button
+                  type="button"
+                  role="tab"
+                  aria-selected={alertTab === "history"}
+                  onClick={() => {
+                    setAlertTab("history");
+                    void fetchHistory();
+                  }}
+                  className={`rounded-md px-3 py-1 text-xs font-medium transition ${
+                    alertTab === "history" ? `${ui.card} ${ui.accentText} shadow-sm` : ui.mutedText
+                  }`}
+                >
+                  History
+                </button>
+              </div>
               {alertTab === "history" ? (
                 <button
                   type="button"
@@ -499,6 +506,7 @@ export function MarketSniperDashboard({
                 <div className="md:col-span-2">
                   <EmptyState
                     ui={ui}
+                    icon={BellOff}
                     title="No live alerts"
                     detail="No active Supabase alerts are available right now."
                   />
@@ -507,6 +515,7 @@ export function MarketSniperDashboard({
                 <div className="md:col-span-2">
                   <EmptyState
                     ui={ui}
+                    icon={BellRing}
                     title="No matching alerts"
                     detail="No alerts match current filters. Loosen the filters to see more."
                   />
@@ -530,6 +539,7 @@ export function MarketSniperDashboard({
                 <div className="md:col-span-2">
                   <EmptyState
                     ui={ui}
+                    icon={Clock3}
                     title="No history for today"
                     detail="No expired or invalidated alerts from today."
                   />
@@ -565,6 +575,7 @@ export function MarketSniperDashboard({
             {trades.length === 0 ? (
               <EmptyState
                 ui={ui}
+                icon={WalletCards}
                 title="No shadow trades"
                 detail="Open a trade from a live alert."
               />
@@ -631,7 +642,8 @@ function AlertCard({
   const blocked = safetyReason !== null;
 
   return (
-    <article className={`rounded-lg border p-4 shadow-2xl ${ui.card} ${isHistory ? "opacity-65" : ""}`}>
+    <article className={`relative overflow-hidden rounded-lg border p-4 shadow-lg ${ui.card} ${isHistory ? "opacity-60" : ""}`}>
+      <div className={`pointer-events-none absolute inset-y-0 left-0 w-[3px] ${bearish ? "bg-red-500/80" : "bg-emerald-500/80"}`} />
       <div className="flex flex-col gap-4 xl:flex-row xl:items-start xl:justify-between">
         <div className="min-w-0">
           <div className="flex flex-wrap items-center gap-2">
@@ -680,16 +692,14 @@ function AlertCard({
       </div>
 
       {alert.score_factors.length > 0 ? (
-        <div
-          className={`mt-4 flex flex-wrap items-center gap-x-4 gap-y-1.5 text-xs ${ui.secondaryText}`}
-        >
+        <div className="mt-4 flex flex-wrap gap-1.5">
           {alert.score_factors.map((factor) => (
             <span
               key={`${alert.id}-${factor.name}`}
-              className="inline-flex items-center gap-1.5"
+              className={`inline-flex items-center gap-1.5 rounded-full border px-2.5 py-1 text-[11px] ${ui.subtlePanel} ${ui.secondaryText}`}
             >
-              <Check className={`size-3.5 ${ui.accentText}`} />
-              <span className={ui.heading}>{factor.name}</span>
+              <Check className={`size-3 shrink-0 ${ui.accentText}`} />
+              <span className={`font-medium ${ui.heading}`}>{factor.name}</span>
               <span className={ui.mutedText}>· {factor.state}</span>
             </span>
           ))}
@@ -954,16 +964,19 @@ function ExecutionPlan({
 }
 
 function Conviction({ score, ui }: { score: number; ui: ThemeClasses }) {
+  const r = 22;
+  const circ = 2 * Math.PI * r;
+  const dash = (score / 100) * circ;
+  const gap = circ - dash;
   return (
-    <div className={`grid size-14 place-items-center rounded-lg border ${ui.convictionBox}`}>
-      <div className="text-center">
-        <div className={`font-mono text-base font-semibold ${ui.accentText}`}>{score}%</div>
-        <div
-          className={`mt-0.5 flex items-center justify-center gap-1 text-[9px] uppercase tracking-[0.14em] ${ui.mutedText}`}
-        >
-          <Gauge className="size-2.5" />
-          Score
-        </div>
+    <div className={`relative size-16 shrink-0 ${ui.accentText}`} aria-label={`Conviction: ${score}%`}>
+      <svg viewBox="0 0 56 56" className="size-full -rotate-90" aria-hidden="true">
+        <circle cx="28" cy="28" r={r} fill="none" strokeWidth="4.5" strokeLinecap="round" className="stroke-current opacity-[0.12]" />
+        <circle cx="28" cy="28" r={r} fill="none" strokeWidth="4.5" strokeLinecap="round" strokeDasharray={`${dash} ${gap}`} className="stroke-current" />
+      </svg>
+      <div className="absolute inset-0 flex flex-col items-center justify-center">
+        <span className="font-mono text-sm font-bold leading-none tabular-nums">{score}%</span>
+        <span className={`mt-0.5 text-[8px] uppercase tracking-[0.12em] ${ui.mutedText}`}>Score</span>
       </div>
     </div>
   );
@@ -1171,15 +1184,18 @@ function DataTile({ ui, label, value }: { ui: ThemeClasses; label: string; value
 
 function EmptyState({
   ui,
+  icon: Icon,
   title,
   detail,
 }: {
   ui: ThemeClasses;
+  icon?: LucideIcon;
   title: string;
   detail: string;
 }) {
   return (
-    <div className={`rounded-lg border p-5 ${ui.card}`}>
+    <div className={`rounded-lg border px-6 py-10 text-center ${ui.card}`}>
+      {Icon ? <Icon className={`mx-auto mb-3 size-8 ${ui.mutedText}`} aria-hidden="true" /> : null}
       <div className={`text-sm font-semibold ${ui.heading}`}>{title}</div>
       <div className={`mt-1 text-sm ${ui.secondaryText}`}>{detail}</div>
     </div>
