@@ -204,6 +204,11 @@ body {
   text-shadow: 0 0 24px var(--ms-accent-glow);
 }
 
+/* Light-mode emerald glow turns muddy against the off-white page. */
+[data-ms-theme="light"] .ms-accent-text {
+  text-shadow: none;
+}
+
 .ms-ticker-dot {
   position: relative;
   display: inline-block;

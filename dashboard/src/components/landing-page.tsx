@@ -1,6 +1,6 @@
 "use client";
 
-import { Crosshair, LogIn, LogOut, Moon, Sun, X } from "lucide-react";
+import { CheckCircle2, Crosshair, LogIn, LogOut, Mail, Moon, Sun, X } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import { createBrowserClient, isSupabaseConfigured } from "@/lib/supabase/client";
 import { getThemeClasses, type Theme, type ThemeClasses } from "@/lib/theme";
@@ -34,6 +34,8 @@ export function LandingPage() {
   const [signInEmail, setSignInEmail] = useState("");
   const [signInError, setSignInError] = useState<string | null>(null);
   const [signInSubmitting, setSignInSubmitting] = useState(false);
+  // Address the magic link was sent to; non-null = success state in modal.
+  const [signInSentTo, setSignInSentTo] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   const supabase = useMemo(() => createBrowserClient(), []);
   const ui = getThemeClasses(theme);
@@ -95,6 +97,7 @@ export function LandingPage() {
       return;
     }
     setSignInError(null);
+    setSignInSentTo(null);
     setSignInOpen(true);
   }
 
@@ -104,6 +107,7 @@ export function LandingPage() {
     }
     setSignInOpen(false);
     setSignInError(null);
+    setSignInSentTo(null);
   }
 
   async function submitSignIn(event: React.FormEvent<HTMLFormElement>) {
@@ -133,9 +137,13 @@ export function LandingPage() {
         return;
       }
 
-      setSignInOpen(false);
-      setSignInEmail("");
-      setNotice("Magic link sent. Check your email.");
+      // Keep the modal open with a clear success state. The tiny toast
+      // alone was easy to miss, leading to re-submission anxiety.
+      setSignInSentTo(email);
+    } catch (caught) {
+      setSignInError(
+        caught instanceof Error ? caught.message : "Network error sending magic link.",
+      );
     } finally {
       setSignInSubmitting(false);
     }
@@ -231,9 +239,11 @@ export function LandingPage() {
           email={signInEmail}
           error={signInError}
           submitting={signInSubmitting}
+          sentTo={signInSentTo}
           onChange={setSignInEmail}
           onSubmit={submitSignIn}
           onClose={closeSignIn}
+          onResend={() => setSignInSentTo(null)}
           ui={ui}
         />
       ) : null}
@@ -245,19 +255,25 @@ function SignInModal({
   email,
   error,
   submitting,
+  sentTo,
   onChange,
   onSubmit,
   onClose,
+  onResend,
   ui,
 }: {
   email: string;
   error: string | null;
   submitting: boolean;
+  sentTo: string | null;
   onChange: (value: string) => void;
   onSubmit: (event: React.FormEvent<HTMLFormElement>) => void;
   onClose: () => void;
+  onResend: () => void;
   ui: ThemeClasses;
 }) {
+  const isSuccess = sentTo !== null;
+
   return (
     <div
       className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4"
@@ -265,11 +281,69 @@ function SignInModal({
       aria-modal="true"
       aria-labelledby="sign-in-title"
       onClick={(event) => {
-        if (event.target === event.currentTarget) {
+        if (event.target === event.currentTarget && !submitting) {
           onClose();
         }
       }}
     >
+      {isSuccess ? (
+        <div
+          className={`w-full max-w-md rounded-lg border p-6 shadow-2xl ${ui.card}`}
+        >
+          <div className="flex items-start justify-between gap-3">
+            <div>
+              <h2
+                id="sign-in-title"
+                className={`flex items-center gap-2 text-lg font-semibold ${ui.heading}`}
+              >
+                <CheckCircle2 className={`size-5 ${ui.positiveText}`} />
+                Check your email
+              </h2>
+              <p className={`mt-1 text-sm ${ui.secondaryText}`}>
+                We sent a magic link to{" "}
+                <span className={`font-mono ${ui.heading}`}>{sentTo}</span>.
+                Click the link to finish signing in — it expires in about an
+                hour.
+              </p>
+            </div>
+            <button
+              type="button"
+              onClick={onClose}
+              aria-label="Close sign in"
+              className={`inline-flex size-8 items-center justify-center rounded-md border ${ui.outlineButton}`}
+            >
+              <X className="size-4" />
+            </button>
+          </div>
+
+          <div
+            className={`mt-5 flex items-start gap-3 rounded-md border px-3 py-3 ${ui.subtlePanel}`}
+          >
+            <Mail className={`mt-0.5 size-4 ${ui.mutedText}`} />
+            <p className={`text-xs leading-5 ${ui.secondaryText}`}>
+              Didn&apos;t arrive? Check spam, then send again — magic links
+              sometimes lose a race against your inbox provider.
+            </p>
+          </div>
+
+          <div className="mt-5 flex gap-3">
+            <button
+              type="button"
+              onClick={onResend}
+              className={`inline-flex h-11 flex-1 items-center justify-center gap-2 rounded-md border text-sm font-medium transition ${ui.outlineButton}`}
+            >
+              Resend to a different address
+            </button>
+            <button
+              type="button"
+              onClick={onClose}
+              className={`inline-flex h-11 flex-1 items-center justify-center gap-2 rounded-md text-sm font-semibold transition ${ui.primaryButton}`}
+            >
+              Done
+            </button>
+          </div>
+        </div>
+      ) : (
       <form
         onSubmit={onSubmit}
         className={`w-full max-w-md rounded-lg border p-6 shadow-2xl ${ui.card}`}
@@ -329,6 +403,7 @@ function SignInModal({
           {submitting ? "Sending..." : "Send magic link"}
         </button>
       </form>
+      )}
     </div>
   );
 }

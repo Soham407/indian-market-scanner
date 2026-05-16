@@ -295,11 +295,19 @@ function HeroSection({
         className="ms-reveal mt-7 max-w-5xl text-balance text-4xl font-semibold leading-[1.05] tracking-tight sm:text-6xl lg:text-7xl"
         style={{ ["--ms-reveal-delay" as string]: "120ms" }}
       >
-        <span className={ui.heading}>Catch institutional</span>
-        <br />
+        <span className={ui.heading}>Catch institutional </span>
         <span className="ms-accent-text">liquidity traps</span>
         <span className={ui.heading}> before the reset.</span>
       </h2>
+
+      <p
+        className={`ms-reveal mt-4 max-w-2xl text-balance text-sm sm:text-base ${ui.mutedText}`}
+        style={{ ["--ms-reveal-delay" as string]: "180ms" }}
+      >
+        Plain English: it spots NSE stocks that briefly pop above yesterday&apos;s
+        high on real volume, then stall — and shows you the disciplined short
+        trade back to fair value.
+      </p>
 
       <p
         className={`ms-reveal mt-6 max-w-2xl text-balance text-base leading-7 sm:text-lg ${ui.secondaryText}`}

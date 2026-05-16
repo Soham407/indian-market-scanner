@@ -16,7 +16,7 @@ import {
   WalletCards,
   X,
 } from "lucide-react";
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import type { SupabaseClient } from "@supabase/supabase-js";
 import type { AlertFeedItem, ShadowTradePosition } from "@/lib/types";
 import type { ThemeClasses } from "@/lib/theme";
@@ -65,6 +65,44 @@ function classifyFreshness(detectedAt: string): Freshness {
   return "stale";
 }
 
+type TradePlan = {
+  bearish: boolean;
+  entry: number;
+  vwap: number | null;
+  stopLoss: number;
+  profitMargin: number | null;
+  riskMargin: number;
+  rr: number | null;
+  quality: RrQuality | null;
+};
+
+function computeTradePlan(alert: AlertFeedItem): TradePlan {
+  const bearish = alert.direction === "bearish";
+  const entry = alert.current_price;
+  const vwap = alert.vwap;
+  const stopLoss = bearish
+    ? alert.trigger_price * 1.0015
+    : alert.trigger_price * 0.9985;
+  const profitMargin =
+    vwap === null ? null : bearish ? entry - vwap : vwap - entry;
+  const riskMargin = bearish ? stopLoss - entry : entry - stopLoss;
+  const rr =
+    profitMargin !== null && riskMargin > 0 ? profitMargin / riskMargin : null;
+  const quality = classifyRr(rr);
+  return { bearish, entry, vwap, stopLoss, profitMargin, riskMargin, rr, quality };
+}
+
+function tradeSafetyReason(
+  plan: TradePlan,
+  freshness: Freshness,
+): string | null {
+  if (plan.vwap === null) return "No VWAP target — cannot define exit";
+  if (freshness === "stale") return "Data is stale — refresh before trading";
+  if (plan.quality === "poor") return "Risk:Reward below 1 — unfavorable";
+  if (plan.riskMargin <= 0) return "Invalid stop — entry past trigger buffer";
+  return null;
+}
+
 export function MarketSniperDashboard({
   supabase,
   userId,
@@ -83,6 +121,9 @@ export function MarketSniperDashboard({
   const [openedAlertIds, setOpenedAlertIds] = useState<Set<string>>(
     () => new Set(),
   );
+  // Ref-based in-flight gate: state setters batch, so two clicks in the
+  // same tick both pass the Set check and double-submit the RPC.
+  const inFlightAlertIds = useRef<Set<string>>(new Set());
 
   const refreshAlerts = useCallback(async () => {
     const { data, error } = await supabase
@@ -169,7 +210,7 @@ export function MarketSniperDashboard({
       : 0;
 
   async function paperTrade(alert: AlertFeedItem, quantity: number) {
-    if (submittingAlertIds.has(alert.id) || openedAlertIds.has(alert.id)) {
+    if (inFlightAlertIds.current.has(alert.id) || openedAlertIds.has(alert.id)) {
       return;
     }
 
@@ -178,6 +219,7 @@ export function MarketSniperDashboard({
       return;
     }
 
+    inFlightAlertIds.current.add(alert.id);
     setSubmittingAlertIds((current) => new Set(current).add(alert.id));
 
     try {
@@ -201,6 +243,7 @@ export function MarketSniperDashboard({
         }`,
       );
     } finally {
+      inFlightAlertIds.current.delete(alert.id);
       setSubmittingAlertIds((current) => {
         const next = new Set(current);
         next.delete(alert.id);
@@ -329,6 +372,9 @@ function AlertCard({
       : freshness === "aging"
         ? ui.freshnessAging
         : ui.freshnessStale;
+  const plan = computeTradePlan(alert);
+  const safetyReason = tradeSafetyReason(plan, freshness);
+  const blocked = safetyReason !== null;
 
   return (
     <article className={`rounded-lg border p-4 shadow-2xl ${ui.card}`}>
@@ -392,7 +438,7 @@ function AlertCard({
       ) : null}
 
       <ExecutionPlan
-        alert={alert}
+        plan={plan}
         quantity={quantity}
         onQuantityChange={setQuantity}
         ui={ui}
@@ -400,42 +446,55 @@ function AlertCard({
 
       <button
         className={`mt-3 inline-flex h-11 w-full items-center justify-center gap-2 rounded-md text-sm font-semibold transition ${
-          isOpened ? ui.successButton : ui.paperTradeButton
+          isOpened
+            ? ui.successButton
+            : blocked
+              ? ui.outlineButton + " cursor-not-allowed opacity-70"
+              : ui.paperTradeButton
         }`}
-        disabled={isSubmitting || isOpened}
+        disabled={isSubmitting || isOpened || blocked}
         onClick={() => onPaperTrade(alert, quantity)}
+        aria-label={
+          blocked
+            ? `Paper trade disabled: ${safetyReason}`
+            : `Paper trade ${alert.symbol} quantity ${quantity}`
+        }
+        title={safetyReason ?? undefined}
       >
-        <Target className="size-4" />
-        {isOpened ? "Trade Open" : isSubmitting ? "Opening..." : `Paper Trade (qty ${quantity})`}
+        {blocked ? <ShieldAlert className="size-4" /> : <Target className="size-4" />}
+        {isOpened
+          ? "Trade Open"
+          : isSubmitting
+            ? "Opening..."
+            : blocked
+              ? "Trade Blocked"
+              : `Paper Trade (qty ${quantity})`}
       </button>
+
+      {blocked && !isOpened ? (
+        <p
+          className={`mt-2 text-center text-xs ${ui.negativeText}`}
+          role="status"
+        >
+          {safetyReason}
+        </p>
+      ) : null}
     </article>
   );
 }
 
 function ExecutionPlan({
-  alert,
+  plan,
   quantity,
   onQuantityChange,
   ui,
 }: {
-  alert: AlertFeedItem;
+  plan: TradePlan;
   quantity: number;
   onQuantityChange: (next: number) => void;
   ui: ThemeClasses;
 }) {
-  const bearish = alert.direction === "bearish";
-  const entry = alert.current_price;
-  const vwap = alert.vwap;
-
-  const stopLoss = bearish
-    ? alert.trigger_price * 1.0015
-    : alert.trigger_price * 0.9985;
-
-  const profitMargin = vwap === null ? null : bearish ? entry - vwap : vwap - entry;
-  const riskMargin = bearish ? stopLoss - entry : entry - stopLoss;
-  const rrRatio =
-    profitMargin !== null && riskMargin > 0 ? profitMargin / riskMargin : null;
-  const rrQuality = classifyRr(rrRatio);
+  const { bearish, entry, vwap, stopLoss, profitMargin, riskMargin, rr: rrRatio, quality: rrQuality } = plan;
 
   const tpPercent =
     vwap !== null && entry > 0 ? ((bearish ? entry - vwap : vwap - entry) / entry) * 100 : null;
@@ -722,6 +781,14 @@ function TradeCard({
   ui: ThemeClasses;
 }) {
   const positive = trade.unrealized_pnl >= 0;
+  const [confirming, setConfirming] = useState(false);
+
+  // Auto-reset the confirm state if user walks away.
+  useEffect(() => {
+    if (!confirming) return;
+    const timer = window.setTimeout(() => setConfirming(false), 4000);
+    return () => window.clearTimeout(timer);
+  }, [confirming]);
 
   return (
     <article className={`rounded-lg border p-4 ${ui.card}`}>
@@ -747,11 +814,27 @@ function TradeCard({
       </div>
       {trade.status === "open" ? (
         <button
-          className={`mt-4 inline-flex h-9 w-full items-center justify-center gap-2 rounded-md border text-sm font-medium transition ${ui.outlineButton}`}
-          onClick={() => onClose(trade)}
+          className={`mt-4 inline-flex h-9 w-full items-center justify-center gap-2 rounded-md border text-sm font-medium transition ${
+            confirming ? ui.qualityPoor : ui.outlineButton
+          }`}
+          onClick={() => {
+            if (confirming) {
+              setConfirming(false);
+              onClose(trade);
+            } else {
+              setConfirming(true);
+            }
+          }}
+          aria-label={
+            confirming
+              ? `Confirm close ${trade.symbol}, locks in P&L ${currencyFormat.format(trade.unrealized_pnl)}`
+              : `Close shadow trade ${trade.symbol}`
+          }
         >
           <X className="size-4" />
-          Close Shadow Trade
+          {confirming
+            ? `Confirm — lock in ${currencyFormat.format(trade.unrealized_pnl)}`
+            : "Close Shadow Trade"}
         </button>
       ) : (
         <div className={`mt-4 rounded-md px-3 py-2 text-center text-sm ${ui.subtlePanel}`}>
