@@ -71,7 +71,7 @@ function classifyFreshness(detectedAt: string): Freshness {
 type TradePlan = {
   bearish: boolean;
   entry: number;
-  vwap: number | null;
+  takeProfit: number | null;
   stopLoss: number;
   profitMargin: number | null;
   riskMargin: number;
@@ -82,23 +82,25 @@ type TradePlan = {
 function computeTradePlan(alert: AlertFeedItem): TradePlan {
   const bearish = alert.direction === "bearish";
   const entry = alert.current_price;
-  const vwap = alert.vwap;
+  // Prefer the snapshotted take_profit_price (set at alert creation) over live VWAP,
+  // so the displayed target doesn't flip direction as VWAP drifts during the session.
+  const takeProfit = alert.take_profit_price ?? alert.vwap;
   // 1% stop from entry — matches sl_stop=0.01 in the validated vectorbt backtest.
   const stopLoss = bearish ? entry * 1.01 : entry * 0.99;
   const profitMargin =
-    vwap === null ? null : bearish ? entry - vwap : vwap - entry;
+    takeProfit === null ? null : bearish ? entry - takeProfit : takeProfit - entry;
   const riskMargin = bearish ? stopLoss - entry : entry - stopLoss;
   const rr =
     profitMargin !== null && riskMargin > 0 ? profitMargin / riskMargin : null;
   const quality = classifyRr(rr);
-  return { bearish, entry, vwap, stopLoss, profitMargin, riskMargin, rr, quality };
+  return { bearish, entry, takeProfit, stopLoss, profitMargin, riskMargin, rr, quality };
 }
 
 function tradeSafetyReason(
   plan: TradePlan,
   freshness: Freshness,
 ): string | null {
-  if (plan.vwap === null) return "No VWAP target — cannot define exit";
+  if (plan.takeProfit === null) return "No take-profit target — cannot define exit";
   if (freshness === "stale") return "Data is stale — refresh before trading";
   if (plan.quality === "poor") return "Risk:Reward below 1 — unfavorable";
   if (plan.riskMargin <= 0) return "Invalid stop — entry past trigger buffer";
@@ -706,7 +708,7 @@ function AlertCard({
             </span>
             <span className={`inline-flex items-center gap-1 text-xs ${freshnessClass}`}>
               <Clock3 className="size-3.5" />
-              {relativeTime(alert.detected_at)}
+              {istTime(alert.detected_at)}
               {freshness === "stale" ? " · stale" : null}
             </span>
             {isHistory ? (
@@ -828,10 +830,10 @@ function ExecutionPlan({
   onQuantityChange: (next: number) => void;
   ui: ThemeClasses;
 }) {
-  const { bearish, entry, vwap, stopLoss, profitMargin, riskMargin, rr: rrRatio, quality: rrQuality } = plan;
+  const { bearish, entry, takeProfit, stopLoss, profitMargin, riskMargin, rr: rrRatio, quality: rrQuality } = plan;
 
   const tpPercent =
-    vwap !== null && entry > 0 ? ((bearish ? entry - vwap : vwap - entry) / entry) * 100 : null;
+    takeProfit !== null && entry > 0 ? ((bearish ? entry - takeProfit : takeProfit - entry) / entry) * 100 : null;
   const slPercent = entry > 0 ? ((bearish ? stopLoss - entry : entry - stopLoss) / entry) * 100 : null;
 
   const totalRisk = riskMargin > 0 ? riskMargin * quantity : null;
@@ -891,17 +893,17 @@ function ExecutionPlan({
             </div>
             <Target className={`size-3.5 ${ui.positiveText}`} />
           </div>
-          {vwap === null ? (
+          {takeProfit === null ? (
             <>
               <div className={`mt-2 font-mono text-lg font-semibold ${ui.mutedText}`}>
-                VWAP n/a
+                n/a
               </div>
-              <div className={`mt-1 text-xs ${ui.mutedText}`}>Awaiting fresh VWAP</div>
+              <div className={`mt-1 text-xs ${ui.mutedText}`}>Awaiting target</div>
             </>
           ) : (
             <>
               <div className={`mt-2 font-mono text-lg font-semibold ${ui.positiveText}`}>
-                {currencyFormat.format(vwap)}
+                {currencyFormat.format(takeProfit)}
               </div>
               <div className={`mt-1 flex items-center justify-between text-xs ${ui.positiveText}`}>
                 <span>
@@ -1242,7 +1244,7 @@ function HistoryAlertRow({ alert, ui }: { alert: AlertFeedItem; ui: ThemeClasses
       <span className={`shrink-0 inline-flex items-center rounded border px-2 py-0.5 text-[10px] font-bold tracking-[0.18em] ${ui.qualityPoor}`}>
         EXPIRED
       </span>
-      <span className={`shrink-0 text-xs ${ui.mutedText}`}>{relativeTime(alert.detected_at)}</span>
+      <span className={`shrink-0 text-xs ${ui.mutedText}`}>{istTime(alert.detected_at)}</span>
     </div>
   );
 }
@@ -1267,29 +1269,13 @@ function EmptyState({
   );
 }
 
-function relativeTime(timestamp: string) {
+function istTime(timestamp: string): string {
   const parsed = new Date(timestamp).getTime();
-
-  if (!Number.isFinite(parsed)) {
-    return "—";
-  }
-
-  const diff = Date.now() - parsed;
-
-  if (diff < 60000) {
-    return "just now";
-  }
-
-  const minutes = Math.round(diff / 60000);
-  if (minutes < 60) {
-    return `${minutes}m ago`;
-  }
-
-  const hours = Math.round(minutes / 60);
-  if (hours < 24) {
-    return `${hours}h ago`;
-  }
-
-  const days = Math.round(hours / 24);
-  return `${days}d ago`;
+  if (!Number.isFinite(parsed)) return "—";
+  // Convert to IST (UTC+5:30)
+  const ist = new Date(parsed + 5.5 * 3600 * 1000);
+  const hh = String(ist.getUTCHours()).padStart(2, "0");
+  const mm = String(ist.getUTCMinutes()).padStart(2, "0");
+  const ss = String(ist.getUTCSeconds()).padStart(2, "0");
+  return `${hh}:${mm}:${ss}`;
 }

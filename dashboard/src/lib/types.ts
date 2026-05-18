@@ -22,6 +22,7 @@ export type AlertFeedItem = {
   trigger_price: number;
   current_price: number;
   vwap: number | null;
+  take_profit_price: number | null;
   swept_level: number;
   swept_level_name: string;
   volume_multiplier: number;

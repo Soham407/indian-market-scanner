@@ -180,6 +180,7 @@ function buildBearishAlert(inst: Instrument, today: string) {
     thesis: `${symbol} swept the previous day high (₹${previous_day_high.toFixed(2)}) but rejected and closed back below it. Price is ${distPct.toFixed(2)}% above VWAP — a classic morning liquidity trap. Short back to VWAP.`,
     trigger_price: previous_day_high,
     current_price: last_price,
+    take_profit_price: vwap,
     swept_level: previous_day_high,
     swept_level_name: "Previous Day High",
     volume_multiplier: multiplier,
@@ -236,6 +237,7 @@ function buildBullishAlert(inst: Instrument, today: string) {
     thesis: `${symbol} swept the previous day low (₹${previous_day_low.toFixed(2)}) but reversed and closed back above it. Price is ${distPct.toFixed(2)}% below VWAP — a bullish liquidity trap. Long back to VWAP.`,
     trigger_price: previous_day_low,
     current_price: last_price,
+    take_profit_price: vwap,
     swept_level: previous_day_low,
     swept_level_name: "Previous Day Low",
     volume_multiplier: multiplier,
@@ -293,6 +295,7 @@ function buildOrTrapBearish(inst: Instrument, today: string) {
     thesis: `${symbol} broke above the opening range high (₹${or_high.toFixed(2)}) but failed to hold and reversed below it. Price is ${distPct.toFixed(2)}% above VWAP — a classic failed breakout trap. Short back to VWAP.`,
     trigger_price: or_high,
     current_price: last_price,
+    take_profit_price: vwap,
     swept_level: or_high,
     swept_level_name: "Opening Range High",
     volume_multiplier: multiplier,
@@ -349,6 +352,7 @@ function buildOrTrapBullish(inst: Instrument, today: string) {
     thesis: `${symbol} broke below the opening range low (₹${or_low.toFixed(2)}) but reversed and closed back above it. Price is ${distPct.toFixed(2)}% below VWAP — a failed breakdown trap. Long back to VWAP.`,
     trigger_price: or_low,
     current_price: last_price,
+    take_profit_price: vwap,
     swept_level: or_low,
     swept_level_name: "Opening Range Low",
     volume_multiplier: multiplier,
@@ -379,10 +383,10 @@ function buildOrTrapBullish(inst: Instrument, today: string) {
 function buildOrBreakoutBullish(inst: Instrument, today: string) {
   if (!isOrBreakoutWindow()) return null;
 
-  const { id, symbol, last_price, or_high, or_date, vwap,
+  const { id, symbol, last_price, or_high, or_low, or_date, vwap,
           session_high, session_volume, prev_day_volume } = inst;
 
-  if (!last_price || !or_high || or_date !== today || !vwap || !session_high) {
+  if (!last_price || !or_high || !or_low || or_date !== today || !vwap || !session_high) {
     return null;
   }
 
@@ -396,18 +400,26 @@ function buildOrBreakoutBullish(inst: Instrument, today: string) {
   if (!confirmedBreak || !aboveVwap || !holdingBreak) return null;
 
   const distPct = ((last_price - or_high) / or_high) * 100;
+  // Only fire within 2% of the OR high — beyond that the optimal entry has passed.
+  if (distPct >= 2.0) return null;
+
   const { hasExpansion, multiplier } = volumeStats(session_volume, prev_day_volume);
-  // Breakouts need volume to be reliable — lower base score without expansion.
-  const score = Math.min(95, (hasExpansion ? 65 : 45) + Math.min(20, Math.round(distPct * 4)));
+  // Fresh breaks (low distPct) score highest — inverted so max bonus at the OR high.
+  const distBonus = Math.max(0, Math.round(20 * (1 - distPct / 2)));
+  const score = Math.min(95, (hasExpansion ? 65 : 45) + distBonus);
+
+  // Measured move target: OR range projected above the OR high.
+  const takeProfitPrice = or_high + (or_high - or_low);
 
   return {
     instrument_id: id,
     dedupe_key: [id, "or_breakout", "bullish", today].join(":"),
     direction: "bullish",
     title: `${symbol} — OR breakout (momentum buy)`,
-    thesis: `${symbol} broke above the opening range high (₹${or_high.toFixed(2)}) and is holding the breakout ${distPct.toFixed(2)}% above OR. Price is above VWAP — momentum is confirmed. Buy the continuation.`,
+    thesis: `${symbol} broke above the opening range high (₹${or_high.toFixed(2)}) and is holding the breakout ${distPct.toFixed(2)}% above OR. Price is above VWAP — momentum is confirmed. Target: ₹${takeProfitPrice.toFixed(2)} (measured move).`,
     trigger_price: or_high,
     current_price: last_price,
+    take_profit_price: takeProfitPrice,
     swept_level: or_high,
     swept_level_name: "Opening Range High",
     volume_multiplier: multiplier,
@@ -421,7 +433,7 @@ function buildOrBreakoutBullish(inst: Instrument, today: string) {
     timeframe_alignment: {
       daily: "confirmed breakout above opening range high",
       intraday: "momentum buy — trailing stop below OR high",
-      vwap: `${distPct.toFixed(2)}% above OR`,
+      target: `₹${takeProfitPrice.toFixed(2)} measured move`,
     },
     expires_at: new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString(),
   };
@@ -437,10 +449,10 @@ function buildOrBreakoutBullish(inst: Instrument, today: string) {
 function buildOrBreakoutBearish(inst: Instrument, today: string) {
   if (!isOrBreakoutWindow()) return null;
 
-  const { id, symbol, last_price, or_low, or_date, vwap,
+  const { id, symbol, last_price, or_low, or_high, or_date, vwap,
           session_low, session_volume, prev_day_volume } = inst;
 
-  if (!last_price || !or_low || or_date !== today || !vwap || !session_low) {
+  if (!last_price || !or_low || !or_high || or_date !== today || !vwap || !session_low) {
     return null;
   }
 
@@ -451,17 +463,26 @@ function buildOrBreakoutBearish(inst: Instrument, today: string) {
   if (!confirmedBreak || !belowVwap || !holdingBreak) return null;
 
   const distPct = ((or_low - last_price) / or_low) * 100;
+  // Only fire within 2% of the OR low — beyond that the optimal entry has passed.
+  if (distPct >= 2.0) return null;
+
   const { hasExpansion, multiplier } = volumeStats(session_volume, prev_day_volume);
-  const score = Math.min(95, (hasExpansion ? 65 : 45) + Math.min(20, Math.round(distPct * 4)));
+  // Fresh breaks (low distPct) score highest — inverted so max bonus at the OR low.
+  const distBonus = Math.max(0, Math.round(20 * (1 - distPct / 2)));
+  const score = Math.min(95, (hasExpansion ? 65 : 45) + distBonus);
+
+  // Measured move target: OR range projected below the OR low.
+  const takeProfitPrice = or_low - (or_high - or_low);
 
   return {
     instrument_id: id,
     dedupe_key: [id, "or_breakout", "bearish", today].join(":"),
     direction: "bearish",
     title: `${symbol} — OR breakdown (momentum short)`,
-    thesis: `${symbol} broke below the opening range low (₹${or_low.toFixed(2)}) and is holding the breakdown ${distPct.toFixed(2)}% below OR. Price is below VWAP — momentum is confirmed bearish. Short the continuation.`,
+    thesis: `${symbol} broke below the opening range low (₹${or_low.toFixed(2)}) and is holding the breakdown ${distPct.toFixed(2)}% below OR. Price is below VWAP — momentum is confirmed bearish. Target: ₹${takeProfitPrice.toFixed(2)} (measured move).`,
     trigger_price: or_low,
     current_price: last_price,
+    take_profit_price: takeProfitPrice,
     swept_level: or_low,
     swept_level_name: "Opening Range Low",
     volume_multiplier: multiplier,
@@ -475,7 +496,7 @@ function buildOrBreakoutBearish(inst: Instrument, today: string) {
     timeframe_alignment: {
       daily: "confirmed breakdown below opening range low",
       intraday: "momentum short — trailing stop above OR low",
-      vwap: `${distPct.toFixed(2)}% below OR`,
+      target: `₹${takeProfitPrice.toFixed(2)} measured move`,
     },
     expires_at: new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString(),
   };
@@ -496,30 +517,28 @@ async function sendTelegramAlerts(alerts: Record<string, unknown>[]) {
       const symbol = (alert.title as string).split(" ")[0];
       const entry = alert.current_price as number;
       const stop = dir === "bearish" ? entry * 1.01 : entry * 0.99;
-      const vwap = alert.vwap as number | null;
+      const tp = alert.take_profit_price as number | null;
       const conviction = alert.conviction_score as number;
-      const rr = vwap
-        ? Math.abs((dir === "bearish" ? entry - vwap : vwap - entry) / (entry * 0.01))
+      const rr = tp
+        ? Math.abs((dir === "bearish" ? entry - tp : tp - entry) / (entry * 0.01))
         : null;
 
       const emoji = dir === "bearish" ? "📉" : "📈";
       const dirLabel = dir === "bearish" ? "SHORT" : "LONG";
-      const patternLabel = dir === "bearish" ? "PDH Trap — failed breakout" : "PDL Bounce — failed breakdown";
+      const titleStr = alert.title as string;
 
       const fmt = (n: number) => `₹${n.toFixed(2)}`;
       const lines = [
         `🎯 *MARKET SNIPER ALERT*`,
         ``,
         `${emoji} *${dirLabel} — ${symbol}*`,
-        `_${patternLabel}_`,
+        `_${titleStr}_`,
         ``,
         `Entry:      ${fmt(entry)}`,
         `Stop:       ${fmt(stop)} (1%)`,
-        vwap ? `VWAP (TP):  ${fmt(vwap)}` : `VWAP:       awaiting`,
+        tp ? `Target:     ${fmt(tp)}` : `Target:     awaiting`,
         rr ? `R:R:        ${rr.toFixed(2)}:1` : ``,
         `Conviction: ${conviction}%`,
-        ``,
-        `⏰ Exit within *20 minutes* or at VWAP`,
       ].filter(l => l !== null);
 
       const text = lines.join("\n");
