@@ -4,12 +4,19 @@
 //   AngelOne_ClientID  – Broker client ID (login ID)
 //   AngelOne_PIN       – Broker login PIN / password
 
-import { SmartAPI } from "npm:smartapi-javascript";
-import * as OTPAuth from "npm:otpauth";
 import { createServiceClient } from "../_shared/supabase.ts";
 import { getMarketSessionStatus } from "../_shared/market-hours.ts";
 
 const EXCHANGE = "NSE";
+const ANGEL_BASE = "https://apiconnect.angelone.in";
+
+// True during 09:15–10:14 IST — the window in which we snapshot the opening range.
+function isOrBuildWindow(): boolean {
+  const nowIst = new Date(Date.now() + 5.5 * 3600 * 1000);
+  const h = nowIst.getUTCHours();
+  const m = nowIst.getUTCMinutes();
+  return (h === 9 && m >= 15) || (h === 10 && m < 15);
+}
 
 // Official Nifty 200 constituent symbols (Nifty 50 + Nifty Next 50 + Nifty Midcap 100)
 const NIFTY200_SYMBOLS = [
@@ -58,10 +65,10 @@ type DbInstrument = {
   angel_one_token: string | null;
   previous_day_high: number | null;
   pdh_refreshed_at: string | null;
+  session_high: number | null;
+  session_low: number | null;
+  or_date: string | null;
 };
-
-// deno-lint-ignore no-explicit-any
-type AngelApi = any;
 
 type AngelQuote = {
   symbolToken: string;
@@ -69,99 +76,170 @@ type AngelQuote = {
   open: number;
   high: number;
   low: number;
-  // `close` in a live FULL-mode quote is the *previous session's* closing price
   close: number;
   ltp: number;
   volume: number;
-  // Angel One uses either avgPrice or averagePrice depending on SDK version
   avgPrice?: number;
   averagePrice?: number;
 };
 
 // ---------------------------------------------------------------------------
+// Native TOTP — no npm dependency, uses Deno's built-in crypto.subtle
+// ---------------------------------------------------------------------------
+
+async function generateTotp(secret: string): Promise<string> {
+  // Strip hyphens and whitespace to normalise UUID-style secrets
+  const stripped = secret.replace(/[-\s]/g, "");
+  const isHex = /^[0-9a-fA-F]+$/.test(stripped) && stripped.length % 2 === 0;
+
+  let keyBytes: Uint8Array;
+  if (isHex) {
+    // Angel One "Secret Key" is a UUID / hex string — decode as raw hex bytes
+    keyBytes = new Uint8Array(stripped.length / 2);
+    for (let i = 0; i < keyBytes.length; i++) {
+      keyBytes[i] = parseInt(stripped.slice(i * 2, i * 2 + 2), 16);
+    }
+  } else {
+    // Standard base32 TOTP seed (Google Authenticator)
+    const alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZ234567";
+    const cleaned = stripped.toUpperCase().replace(/=/g, "");
+    let bits = "";
+    for (const ch of cleaned) {
+      const v = alphabet.indexOf(ch);
+      bits += (v === -1 ? 0 : v).toString(2).padStart(5, "0");
+    }
+    keyBytes = new Uint8Array(Math.floor(bits.length / 8));
+    for (let i = 0; i < keyBytes.length; i++) {
+      keyBytes[i] = parseInt(bits.slice(i * 8, i * 8 + 8), 2);
+    }
+  }
+
+  const counter = Math.floor(Date.now() / 1000 / 30);
+  const msg = new Uint8Array(8);
+  let c = counter;
+  for (let i = 7; i >= 0; i--) { msg[i] = c & 0xff; c = Math.floor(c / 256); }
+
+  const key = await crypto.subtle.importKey("raw", keyBytes, { name: "HMAC", hash: "SHA-1" }, false, ["sign"]);
+  const mac = new Uint8Array(await crypto.subtle.sign("HMAC", key, msg));
+
+  const offset = mac[19] & 0x0f;
+  const code = ((mac[offset] & 0x7f) << 24) | ((mac[offset + 1] & 0xff) << 16) |
+    ((mac[offset + 2] & 0xff) << 8) | (mac[offset + 3] & 0xff);
+  return (code % 1_000_000).toString().padStart(6, "0");
+}
+
+// ---------------------------------------------------------------------------
+// Angel One direct HTTP helpers — no npm SmartAPI SDK
+// ---------------------------------------------------------------------------
+
+function angelHeaders(apiKey: string, jwtToken?: string): Record<string, string> {
+  const h: Record<string, string> = {
+    "Content-Type": "application/json",
+    "Accept": "application/json",
+    "X-UserType": "USER",
+    "X-SourceID": "WEB",
+    "X-ClientLocalIP": "127.0.0.1",
+    "X-ClientPublicIP": "1.1.1.1",
+    "X-MACAddress": "00-00-00-00-00-00",
+    "X-PrivateKey": apiKey,
+  };
+  if (jwtToken) h["Authorization"] = `Bearer ${jwtToken}`;
+  return h;
+}
+
+async function angelLogin(apiKey: string, clientId: string, pin: string, totp: string): Promise<string> {
+  const resp = await fetch(`${ANGEL_BASE}/rest/auth/angelbroking/user/v1/loginByPassword`, {
+    method: "POST",
+    headers: angelHeaders(apiKey),
+    body: JSON.stringify({ clientcode: clientId, password: pin, totp }),
+  });
+  const data = await resp.json();
+  if (!data?.status || !data?.data?.jwtToken) {
+    throw new Error(`Angel One login failed: ${data?.message ?? JSON.stringify(data)}`);
+  }
+  return data.data.jwtToken as string;
+}
+
+
+async function angelGetMarketData(
+  apiKey: string, jwtToken: string, exchange: string, tokens: string[],
+): Promise<AngelQuote[]> {
+  const resp = await fetch(`${ANGEL_BASE}/rest/secure/angelbroking/market/v1/quote/`, {
+    method: "POST",
+    headers: angelHeaders(apiKey, jwtToken),
+    body: JSON.stringify({ mode: "FULL", exchangeTokens: { [exchange]: tokens } }),
+  });
+  const data = await resp.json();
+  return (data?.data?.fetched ?? []) as AngelQuote[];
+}
+
+async function angelGetCandleData(
+  apiKey: string, jwtToken: string,
+  params: { exchange: string; symboltoken: string; interval: string; fromdate: string; todate: string },
+): Promise<[string, number, number, number, number, number][]> {
+  const resp = await fetch(`${ANGEL_BASE}/rest/secure/angelbroking/historical/v1/getCandleData`, {
+    method: "POST",
+    headers: angelHeaders(apiKey, jwtToken),
+    body: JSON.stringify(params),
+  });
+  const data = await resp.json();
+  return (data?.data ?? []) as [string, number, number, number, number, number][];
+}
+
+// ---------------------------------------------------------------------------
 // Authentication
 // ---------------------------------------------------------------------------
 
-async function authenticate(): Promise<AngelApi> {
+async function authenticate(): Promise<{ apiKey: string; jwtToken: string }> {
   const apiKey = Deno.env.get("AngelOne_Apikey");
   const secretKey = Deno.env.get("AngelOne_SecretKey");
   const clientId = Deno.env.get("AngelOne_ClientID");
   const pin = Deno.env.get("AngelOne_PIN");
 
   if (!apiKey || !secretKey || !clientId || !pin) {
-    throw new Error(
-      "Missing Supabase secrets: AngelOne_Apikey, AngelOne_SecretKey, AngelOne_ClientID, AngelOne_PIN",
-    );
+    throw new Error("Missing Supabase secrets: AngelOne_Apikey, AngelOne_SecretKey, AngelOne_ClientID, AngelOne_PIN");
   }
 
-  // Generate the current TOTP from the base32 TOTP seed stored as AngelOne_SecretKey
-  const totp = new OTPAuth.TOTP({
-    algorithm: "SHA1",
-    digits: 6,
-    period: 30,
-    // Normalise: strip spaces, force upper-case (Angel One base32 seeds are upper-case)
-    secret: OTPAuth.Secret.fromBase32(
-      secretKey.toUpperCase().replace(/\s+/g, ""),
-    ),
-  });
-
-  const api = new SmartAPI({ api_key: apiKey });
-
-  // generateSession MUST complete before any other API call.
-  // The SDK stores the JWT internally after this call.
-  const session = await api.generateSession(clientId, pin, totp.generate());
-
-  if (!session?.status) {
-    throw new Error(
-      `Angel One session rejected: ${session?.message ?? "no details"}`,
-    );
-  }
-
-  return api;
+  const totp = await generateTotp(secretKey);
+  const jwtToken = await angelLogin(apiKey, clientId, pin, totp);
+  return { apiKey, jwtToken };
 }
 
 // ---------------------------------------------------------------------------
-// Token resolution – runs once per instrument, result cached in the DB
+// Token resolution – uses the Angel One public scrip master (no auth needed)
 // ---------------------------------------------------------------------------
 
+const SCRIP_MASTER_URL =
+  "https://margincalculator.angelbroking.com/OpenAPI_File/files/OpenAPIScripMaster.json";
+
 async function resolveTokens(
-  api: AngelApi,
   instruments: DbInstrument[],
   supabase: ReturnType<typeof createServiceClient>,
 ): Promise<void> {
   const needsToken = instruments.filter((i) => !i.angel_one_token);
   if (needsToken.length === 0) return;
 
-  for (const inst of needsToken) {
-    try {
-      const result = await api.searchScrip(EXCHANGE, inst.symbol);
-      const scrips: Array<{ tradingSymbol: string; symbolToken: string; name?: string }> =
-        result?.data ?? [];
+  // Download the full instrument list once — public URL, no WAF issues
+  const resp = await fetch(SCRIP_MASTER_URL);
+  if (!resp.ok) throw new Error(`Scrip master fetch failed: ${resp.status}`);
 
-      // Prefer the equity series (SYMBOL-EQ); fall back to first result
-      const match =
-        scrips.find((s) => s.tradingSymbol === `${inst.symbol}-EQ`) ??
-        scrips[0];
+  type ScripEntry = { token: string; symbol: string; exch_seg: string; instrumenttype: string };
+  const master = await resp.json() as ScripEntry[];
 
-      if (!match?.symbolToken) continue;
-
-      const patch: Record<string, string> = {
-        angel_one_token: match.symbolToken,
-      };
-      // Enrich the human-readable name if the API returned one
-      if (match.name) patch.name = match.name;
-
-      await supabase.from("instruments").update(patch).eq("id", inst.id);
-      inst.angel_one_token = match.symbolToken;
-    } catch (err) {
-      console.error(
-        `[refresh-prices] token resolution failed for ${inst.symbol}:`,
-        err instanceof Error ? err.message : err,
-      );
+  // Build lookup: NSE equity base symbol (strip "-EQ") → token
+  const tokenMap = new Map<string, string>();
+  for (const e of master) {
+    if (e.exch_seg === "NSE" && e.instrumenttype === "") {
+      tokenMap.set(e.symbol.replace(/-EQ$/, ""), e.token);
     }
+  }
 
-    // Throttle to respect Angel One rate limits
-    await new Promise((r) => setTimeout(r, 120));
+  // Resolve and update in-memory + DB
+  for (const inst of needsToken) {
+    const token = tokenMap.get(inst.symbol);
+    if (!token) continue;
+    inst.angel_one_token = token;
+    await supabase.from("instruments").update({ angel_one_token: token }).eq("id", inst.id);
   }
 }
 
@@ -170,11 +248,8 @@ async function resolveTokens(
 // ---------------------------------------------------------------------------
 
 function lastTradingDateIst(): string {
-  // Compute "today" in IST, then step back past weekends
   const nowIstMs = Date.now() + 5.5 * 3600 * 1000;
-  const dayOfWeek = new Date(nowIstMs).getUTCDay(); // 0=Sun … 6=Sat
-
-  // Days to step back to reach the most recent weekday
+  const dayOfWeek = new Date(nowIstMs).getUTCDay();
   const daysBack = dayOfWeek === 0 ? 2 : dayOfWeek === 1 ? 3 : 1;
   const lastTradingIstMs = nowIstMs - daysBack * 86400 * 1000;
   return new Date(lastTradingIstMs).toISOString().slice(0, 10);
@@ -183,21 +258,17 @@ function lastTradingDateIst(): string {
 function isTodayIst(ts: string | null): boolean {
   if (!ts) return false;
   const nowDate = new Date(Date.now() + 5.5 * 3600 * 1000).toISOString().slice(0, 10);
-  const tsDate = new Date(new Date(ts).getTime() + 5.5 * 3600 * 1000)
-    .toISOString()
-    .slice(0, 10);
+  const tsDate = new Date(new Date(ts).getTime() + 5.5 * 3600 * 1000).toISOString().slice(0, 10);
   return nowDate === tsDate;
 }
 
 async function refreshPreviousDayOhlc(
-  api: AngelApi,
+  apiKey: string,
+  jwtToken: string,
   instruments: DbInstrument[],
   supabase: ReturnType<typeof createServiceClient>,
 ): Promise<number> {
-  // Only fetch for instruments whose PDH has not been refreshed today
-  const stale = instruments.filter(
-    (i) => i.angel_one_token && !isTodayIst(i.pdh_refreshed_at),
-  );
+  const stale = instruments.filter((i) => i.angel_one_token && !isTodayIst(i.pdh_refreshed_at));
   if (stale.length === 0) return 0;
 
   const yDate = lastTradingDateIst();
@@ -205,7 +276,7 @@ async function refreshPreviousDayOhlc(
 
   for (const inst of stale) {
     try {
-      const hist = await api.getCandleData({
+      const candles = await angelGetCandleData(apiKey, jwtToken, {
         exchange: EXCHANGE,
         symboltoken: inst.angel_one_token!,
         interval: "ONE_DAY",
@@ -213,35 +284,22 @@ async function refreshPreviousDayOhlc(
         todate: `${yDate} 15:30`,
       });
 
-      // Response: [[timestamp, open, high, low, close, volume], ...]
-      const candles: [string, number, number, number, number, number][] =
-        hist?.data ?? [];
-
       if (candles.length === 0) continue;
-
       const [, , high, low, close, volume] = candles[candles.length - 1];
       if (!high) continue;
 
-      await supabase
-        .from("instruments")
-        .update({
-          previous_day_high: high,
-          previous_day_low: low,
-          previous_close: close,
-          prev_day_volume: typeof volume === "number" && volume > 0 ? volume : null,
-          pdh_refreshed_at: new Date().toISOString(),
-        })
-        .eq("id", inst.id);
+      await supabase.from("instruments").update({
+        previous_day_high: high,
+        previous_day_low: low,
+        previous_close: close,
+        prev_day_volume: typeof volume === "number" && volume > 0 ? volume : null,
+        pdh_refreshed_at: new Date().toISOString(),
+      }).eq("id", inst.id);
 
       updated++;
     } catch (err) {
-      console.error(
-        `[refresh-prices] previous-day OHLC refresh failed for ${inst.symbol}:`,
-        err instanceof Error ? err.message : err,
-      );
+      console.error(`[refresh-prices] PDH refresh failed for ${inst.symbol}:`, err instanceof Error ? err.message : err);
     }
-
-    // Angel One historical API is rate-limited; 150 ms between calls is safe
     await new Promise((r) => setTimeout(r, 150));
   }
 
@@ -252,54 +310,63 @@ async function refreshPreviousDayOhlc(
 // Main handler
 // ---------------------------------------------------------------------------
 
-Deno.serve(async () => {
+Deno.serve(async (req) => {
+  const url = new URL(req.url);
+  const force = url.searchParams.get("force") === "true";
   const session = getMarketSessionStatus();
 
-  // Authenticate first — required for both pre-market PDH refresh and live prices
-  let api: AngelApi;
+  let apiKey: string;
+  let jwtToken: string;
   try {
-    api = await authenticate();
+    ({ apiKey, jwtToken } = await authenticate());
   } catch (err) {
-    return Response.json(
-      { error: err instanceof Error ? err.message : String(err) },
-      { status: 500 },
-    );
+    return Response.json({ error: err instanceof Error ? err.message : String(err) }, { status: 500 });
   }
 
   const supabase = createServiceClient();
 
-  // Ensure every Nifty 200 symbol has a row in the instruments table.
-  // Uses DO NOTHING on conflict so existing rows are never overwritten here.
   await supabase.from("instruments").upsert(
-    NIFTY200_SYMBOLS.map((symbol) => ({
-      symbol,
-      exchange: EXCHANGE,
-      name: symbol, // placeholder; overwritten when token is resolved via searchScrip
-    })),
+    NIFTY200_SYMBOLS.map((symbol) => ({ symbol, exchange: EXCHANGE, name: symbol })),
     { onConflict: "symbol,exchange", ignoreDuplicates: true },
   );
 
   const { data: rawInstruments, error: instErr } = await supabase
     .from("instruments")
-    .select("id,symbol,exchange,angel_one_token,previous_day_high,pdh_refreshed_at")
+    .select("id,symbol,exchange,angel_one_token,previous_day_high,pdh_refreshed_at,session_high,session_low,or_date")
     .eq("exchange", EXCHANGE)
     .in("symbol", NIFTY200_SYMBOLS as unknown as string[]);
 
-  if (instErr) {
-    return Response.json({ error: instErr.message }, { status: 500 });
-  }
+  if (instErr) return Response.json({ error: instErr.message }, { status: 500 });
 
   const instruments = (rawInstruments ?? []) as DbInstrument[];
 
-  // Resolve Angel One symbolTokens for any instruments that don't have one yet.
-  // After the first successful run for each symbol this becomes a no-op.
-  await resolveTokens(api, instruments, supabase);
+  await resolveTokens(instruments, supabase);
+
+  // Force mode: populate PDH + OR snapshot right now regardless of market hours.
+  // Used to prime the reference levels when the system starts mid-day.
+  if (force) {
+    const todayIst = new Date(Date.now() + 5.5 * 3600 * 1000).toISOString().slice(0, 10);
+    const pdhRefreshed = await refreshPreviousDayOhlc(apiKey, jwtToken, instruments, supabase);
+
+    // Seed or_high/or_low from current session_high/session_low for any instrument
+    // that doesn't yet have an OR snapshot for today.
+    let orSeeded = 0;
+    for (const inst of instruments) {
+      if (inst.or_date === todayIst) continue;      // already have today's OR
+      if (!inst.session_high || !inst.session_low) continue;
+      await supabase.from("instruments").update({
+        or_high: inst.session_high,
+        or_low: inst.session_low,
+        or_date: todayIst,
+      }).eq("id", inst.id);
+      orSeeded++;
+    }
+
+    return Response.json({ force: true, pdh_refreshed: pdhRefreshed, or_seeded: orSeeded });
+  }
 
   if (!session.isOpen) {
-    // Pre-market window (08:30–09:14 IST): refresh previous-day OHLC so that
-    // scan-alerts has accurate PDH / PDL / previous_close data for the session.
-    const pdhRefreshed = await refreshPreviousDayOhlc(api, instruments, supabase);
-
+    const pdhRefreshed = await refreshPreviousDayOhlc(apiKey, jwtToken, instruments, supabase);
     return Response.json({
       status: "Market closed, standing by.",
       market: EXCHANGE,
@@ -309,107 +376,66 @@ Deno.serve(async () => {
     });
   }
 
-  // -----------------------------------------------------------------------
-  // Market hours: batch-fetch live OHLCV via a single getMarketData call
-  // -----------------------------------------------------------------------
+  // -------------------------------------------------------------------------
+  // Market hours: batch-fetch live OHLCV
+  // -------------------------------------------------------------------------
 
-  const tokens = instruments
-    .map((i) => i.angel_one_token)
-    .filter(Boolean) as string[];
+  const tokens = instruments.map((i) => i.angel_one_token).filter(Boolean) as string[];
 
   if (tokens.length === 0) {
-    return Response.json({
-      refreshed: 0,
-      note: "Token resolution still in progress; will retry next invocation.",
-    });
+    return Response.json({ refreshed: 0, note: "Token resolution still in progress; retrying next invocation." });
   }
 
+  // Angel One limits batch market data to 50 tokens per request
+  const BATCH_SIZE = 50;
   let quotes: AngelQuote[] = [];
   try {
-    const mktResp = await api.getMarketData({
-      mode: "FULL",
-      exchangeTokens: { [EXCHANGE]: tokens },
-    });
-    quotes = mktResp?.data?.fetched ?? [];
+    for (let i = 0; i < tokens.length; i += BATCH_SIZE) {
+      const batch = tokens.slice(i, i + BATCH_SIZE);
+      quotes.push(...await angelGetMarketData(apiKey, jwtToken, EXCHANGE, batch));
+    }
   } catch (err) {
-    return Response.json(
-      {
-        error: `Market data fetch failed: ${
-          err instanceof Error ? err.message : String(err)
-        }`,
-      },
-      { status: 500 },
-    );
+    return Response.json({ error: `Market data fetch failed: ${err instanceof Error ? err.message : String(err)}` }, { status: 500 });
   }
 
   const tokenToId = new Map(
-    instruments
-      .filter((i) => i.angel_one_token)
-      .map((i) => [i.angel_one_token!, i.id]),
+    instruments.filter((i) => i.angel_one_token).map((i) => [i.angel_one_token!, i.id]),
   );
 
-  const priceMarks: { instrument_id: string; price: number; source: string }[] =
-    [];
+  const priceMarks: { instrument_id: string; price: number; source: string }[] = [];
   let updatedCount = 0;
+  const todayIst = new Date(Date.now() + 5.5 * 3600 * 1000).toISOString().slice(0, 10);
+  const inOrWindow = isOrBuildWindow();
 
   for (const quote of quotes) {
     const instrumentId = tokenToId.get(quote.symbolToken);
     if (!instrumentId || !quote.ltp || quote.ltp <= 0) continue;
 
-    // avgPrice / averagePrice: Angel One returns an intraday VWAP approximation.
-    // Field name differs across SDK versions; handle both.
     const rawVwap = quote.avgPrice ?? quote.averagePrice ?? null;
     const rawPrevClose = quote.close ?? null;
-
-    // Sanity-filter optional fields. A zero or null VWAP from a flaky quote
-    // would silently corrupt every downstream alert's take-profit target —
-    // skip the column write instead of poisoning the row.
-    const todayIst = new Date(Date.now() + 5.5 * 3600 * 1000)
-      .toISOString()
-      .slice(0, 10);
-
     const patch: Record<string, number | string> = { last_price: quote.ltp };
-    if (typeof rawVwap === "number" && rawVwap > 0) {
-      patch.vwap = rawVwap;
-    } else if (rawVwap !== null) {
-      console.warn(
-        `[refresh-prices] skipping vwap write for ${quote.tradingSymbol}: invalid value ${rawVwap}`,
-      );
-    }
-    if (typeof rawPrevClose === "number" && rawPrevClose > 0) {
-      // `close` in a live FULL quote = previous session's official close price
-      patch.previous_close = rawPrevClose;
-    } else if (rawPrevClose !== null) {
-      console.warn(
-        `[refresh-prices] skipping previous_close write for ${quote.tradingSymbol}: invalid value ${rawPrevClose}`,
-      );
-    }
-    // Session high and volume reset automatically each day: session_date is the
-    // IST date string written alongside them. scan-alerts checks session_date ===
-    // today before trusting session_high, so yesterday's stale high is never used.
+
+    if (typeof rawVwap === "number" && rawVwap > 0) patch.vwap = rawVwap;
+    if (typeof rawPrevClose === "number" && rawPrevClose > 0) patch.previous_close = rawPrevClose;
     if (typeof quote.high === "number" && quote.high > 0) {
       patch.session_high = quote.high;
       patch.session_date = todayIst;
     }
-    if (typeof quote.low === "number" && quote.low > 0) {
-      patch.session_low = quote.low;
-    }
-    if (typeof quote.volume === "number" && quote.volume > 0) {
-      patch.session_volume = quote.volume;
+    if (typeof quote.low === "number" && quote.low > 0) patch.session_low = quote.low;
+    if (typeof quote.volume === "number" && quote.volume > 0) patch.session_volume = quote.volume;
+
+    if (inOrWindow) {
+      if (typeof quote.high === "number" && quote.high > 0) {
+        patch.or_high = quote.high;
+        patch.or_date = todayIst;
+      }
+      if (typeof quote.low === "number" && quote.low > 0) patch.or_low = quote.low;
     }
 
-    // Update live price fields. `updated_at` is handled by the DB trigger.
     await supabase.from("instruments").update(patch).eq("id", instrumentId);
 
-    priceMarks.push({
-      instrument_id: instrumentId,
-      price: quote.ltp,
-      source: "angel_one",
-    });
+    priceMarks.push({ instrument_id: instrumentId, price: quote.ltp, source: "angel_one" });
 
-    // Keep open shadow trade marks in sync with the live price.
-    // Skip rows already at this exact price to avoid firing the
-    // updated_at trigger and a realtime broadcast on no-op writes.
     await supabase
       .from("shadow_trades")
       .update({ current_price: quote.ltp })
@@ -421,13 +447,8 @@ Deno.serve(async () => {
   }
 
   if (priceMarks.length > 0) {
-    const { error: markError } = await supabase
-      .from("price_marks")
-      .insert(priceMarks);
-
-    if (markError) {
-      return Response.json({ error: markError.message }, { status: 500 });
-    }
+    const { error: markError } = await supabase.from("price_marks").insert(priceMarks);
+    if (markError) return Response.json({ error: markError.message }, { status: 500 });
   }
 
   return Response.json({ refreshed: updatedCount, source: "angel_one" });

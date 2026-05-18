@@ -143,7 +143,7 @@ export function MarketSniperDashboard({
       .select("*")
       .eq("status", "active")
       .order("detected_at", { ascending: false })
-      .limit(25);
+      .limit(50);
 
     if (error) {
       setMessage(error.message);
@@ -186,7 +186,7 @@ export function MarketSniperDashboard({
       .in("status", ["expired", "invalidated"])
       .gte("expires_at", `${todayIst}T00:00:00.000Z`)
       .order("detected_at", { ascending: false })
-      .limit(25);
+      .limit(50);
 
     if (error) {
       setMessage(error.message);
@@ -501,9 +501,9 @@ export function MarketSniperDashboard({
           ) : null}
 
           {alertTab === "live" ? (
-            <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
+            <div className="grid grid-cols-1 gap-4">
               {alerts.length === 0 ? (
-                <div className="md:col-span-2">
+                <div>
                   <EmptyState
                     ui={ui}
                     icon={BellOff}
@@ -512,7 +512,7 @@ export function MarketSniperDashboard({
                   />
                 </div>
               ) : visibleAlerts.length === 0 ? (
-                <div className="md:col-span-2">
+                <div>
                   <EmptyState
                     ui={ui}
                     icon={BellRing}

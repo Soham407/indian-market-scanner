@@ -19,9 +19,9 @@ const NSE_HOLIDAYS = new Set<string>([
   "2026-05-27", // Bakri Id (lunar — verify)
   "2026-08-17", // Janmashtami
   "2026-10-02", // Gandhi Jayanti
+  "2026-10-28", // Diwali — Laxmi Pujan (verify exact date via NSE calendar each year)
   "2026-11-04", // Guru Nanak Jayanti
   "2026-12-25", // Christmas
-  // Diwali Laxmi Pujan / Balipratipada vary year-to-year — add manually.
 ]);
 
 function istDateString(now = new Date()): string {

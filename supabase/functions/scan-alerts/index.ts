@@ -16,6 +16,9 @@ type Instrument = {
   session_volume: number | null;
   session_date: string | null;
   prev_day_volume: number | null;
+  or_high: number | null;
+  or_low: number | null;
+  or_date: string | null;
 };
 
 // ---------------------------------------------------------------------------
@@ -31,6 +34,14 @@ function isMorningTrapWindow(): boolean {
   const h = nowIst.getUTCHours();
   const m = nowIst.getUTCMinutes();
   return (h === 9 && m >= 15) || (h === 10 && m < 15);
+}
+
+// 10:15–13:30 IST — opening range is closed, OR trap signal window.
+function isOrTrapWindow(): boolean {
+  const nowIst = new Date(Date.now() + 5.5 * 3600 * 1000);
+  const h = nowIst.getUTCHours();
+  const m = nowIst.getUTCMinutes();
+  return (h === 10 && m >= 15) || h === 11 || h === 12 || (h === 13 && m <= 30);
 }
 
 function minutesSinceOpen(): number {
@@ -67,8 +78,12 @@ function convictionScore(distancePct: number, hasVolumeExpansion: boolean): numb
 
 Deno.serve(async () => {
   if (!getMarketSessionStatus().isOpen) return marketClosedResponse();
-  if (!isMorningTrapWindow()) {
-    return Response.json({ skipped: "outside morning trap window (09:15–10:15 IST)" });
+
+  const inMorning = isMorningTrapWindow();
+  const inOrWindow = isOrTrapWindow();
+
+  if (!inMorning && !inOrWindow) {
+    return Response.json({ skipped: "outside all active signal windows" });
   }
 
   const supabase = createServiceClient();
@@ -77,7 +92,8 @@ Deno.serve(async () => {
     .from("instruments")
     .select(
       "id,symbol,last_price,previous_day_high,previous_day_low,vwap," +
-      "session_high,session_low,session_volume,session_date,prev_day_volume",
+      "session_high,session_low,session_volume,session_date,prev_day_volume," +
+      "or_high,or_low,or_date",
     )
     .not("last_price", "is", null);
 
@@ -87,7 +103,9 @@ Deno.serve(async () => {
   const alerts = (instruments ?? []).flatMap((inst: Instrument) => {
     const bearish = buildBearishAlert(inst, today);
     const bullish = buildBullishAlert(inst, today);
-    return [bearish, bullish].filter(Boolean);
+    const orBearish = buildOrTrapBearish(inst, today);
+    const orBullish = buildOrTrapBullish(inst, today);
+    return [bearish, bullish, orBearish, orBullish].filter(Boolean);
   });
 
   if (alerts.length === 0) return Response.json({ inserted: 0 });
@@ -123,6 +141,8 @@ Deno.serve(async () => {
 // ---------------------------------------------------------------------------
 
 function buildBearishAlert(inst: Instrument, today: string) {
+  if (!isMorningTrapWindow()) return null;
+
   const { id, symbol, last_price, previous_day_high, vwap, session_high,
           session_volume, session_date, prev_day_volume } = inst;
 
@@ -177,6 +197,8 @@ function buildBearishAlert(inst: Instrument, today: string) {
 // ---------------------------------------------------------------------------
 
 function buildBullishAlert(inst: Instrument, today: string) {
+  if (!isMorningTrapWindow()) return null;
+
   const { id, symbol, last_price, previous_day_low, vwap, session_low,
           session_volume, session_date, prev_day_volume } = inst;
 
@@ -216,6 +238,119 @@ function buildBullishAlert(inst: Instrument, today: string) {
     timeframe_alignment: {
       daily: "failed breakdown below previous session low",
       intraday: "liquidity trap — long back to VWAP",
+      vwap: `${distPct.toFixed(2)}% below VWAP`,
+    },
+    expires_at: new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString(),
+  };
+}
+
+// ---------------------------------------------------------------------------
+// SIGNAL C — Opening Range Trap (bearish)
+//
+// After the first-hour OR is set (09:15–10:15), if price breaks above the OR
+// high and then reverses back below it, it's a failed breakout. Short to VWAP.
+// Same mechanical thesis as the PDH trap — different reference level.
+// ---------------------------------------------------------------------------
+
+function buildOrTrapBearish(inst: Instrument, today: string) {
+  if (!isOrTrapWindow()) return null;
+
+  const { id, symbol, last_price, or_high, or_date, vwap,
+          session_high, session_volume, prev_day_volume } = inst;
+
+  if (!last_price || !or_high || or_date !== today || !vwap || !session_high) {
+    return null;
+  }
+
+  // A new high was made above the OR high after 10:15, then reversed below it.
+  const brokeOut     = session_high > or_high;
+  const trappedBelow = last_price < or_high;
+  // Same VWAP extension threshold as the morning trap.
+  const extendedAbove = last_price > vwap * 1.0075;
+
+  if (!brokeOut || !trappedBelow || !extendedAbove) return null;
+
+  const distPct = ((last_price - vwap) / vwap) * 100;
+  const { hasExpansion, multiplier } = volumeStats(session_volume, prev_day_volume);
+  const score = convictionScore(distPct, hasExpansion);
+
+  return {
+    instrument_id: id,
+    dedupe_key: [id, "or_trap", "bearish", today].join(":"),
+    direction: "bearish",
+    title: `${symbol} — OR trap (failed range breakout)`,
+    thesis: `${symbol} broke above the opening range high (₹${or_high.toFixed(2)}) but failed to hold and reversed below it. Price is ${distPct.toFixed(2)}% above VWAP — a classic failed breakout trap. Short back to VWAP.`,
+    trigger_price: or_high,
+    current_price: last_price,
+    swept_level: or_high,
+    swept_level_name: "Opening Range High",
+    volume_multiplier: multiplier,
+    conviction_score: score,
+    score_factors: [
+      { name: "OR breakout + rejection", score: 25, state: "confirmed" },
+      { name: "VWAP extension", score: Math.min(20, Math.round(distPct * 5)), state: `${distPct.toFixed(2)}% above` },
+      { name: "Volume expansion", score: hasExpansion ? 20 : 0, state: hasExpansion ? `${multiplier}× pace` : "weak" },
+      { name: "OR trap window", score: 10, state: "10:15–13:30 active" },
+    ],
+    timeframe_alignment: {
+      daily: "failed breakout above opening range high",
+      intraday: "OR trap — short back to VWAP",
+      vwap: `${distPct.toFixed(2)}% above VWAP`,
+    },
+    expires_at: new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString(),
+  };
+}
+
+// ---------------------------------------------------------------------------
+// SIGNAL D — Opening Range Trap (bullish)
+//
+// Mirror of Signal C: price swept below the OR low then bounced back above it.
+// Long back to VWAP.
+// ---------------------------------------------------------------------------
+
+function buildOrTrapBullish(inst: Instrument, today: string) {
+  if (!isOrTrapWindow()) return null;
+
+  const { id, symbol, last_price, or_low, or_date, vwap,
+          session_low, session_volume, prev_day_volume } = inst;
+
+  if (!last_price || !or_low || or_date !== today || !vwap || !session_low) {
+    return null;
+  }
+
+  // A new low was made below the OR low after 10:15, then reversed above it.
+  const brokeDown   = session_low < or_low;
+  const bouncedAbove = last_price > or_low;
+  // Same VWAP extension threshold as the morning trap.
+  const extendedBelow = last_price < vwap * 0.9925;
+
+  if (!brokeDown || !bouncedAbove || !extendedBelow) return null;
+
+  const distPct = ((vwap - last_price) / last_price) * 100;
+  const { hasExpansion, multiplier } = volumeStats(session_volume, prev_day_volume);
+  const score = convictionScore(distPct, hasExpansion);
+
+  return {
+    instrument_id: id,
+    dedupe_key: [id, "or_trap", "bullish", today].join(":"),
+    direction: "bullish",
+    title: `${symbol} — OR trap (failed range breakdown)`,
+    thesis: `${symbol} broke below the opening range low (₹${or_low.toFixed(2)}) but reversed and closed back above it. Price is ${distPct.toFixed(2)}% below VWAP — a failed breakdown trap. Long back to VWAP.`,
+    trigger_price: or_low,
+    current_price: last_price,
+    swept_level: or_low,
+    swept_level_name: "Opening Range Low",
+    volume_multiplier: multiplier,
+    conviction_score: score,
+    score_factors: [
+      { name: "OR breakdown + rejection", score: 25, state: "confirmed" },
+      { name: "VWAP extension", score: Math.min(20, Math.round(distPct * 5)), state: `${distPct.toFixed(2)}% below` },
+      { name: "Volume expansion", score: hasExpansion ? 20 : 0, state: hasExpansion ? `${multiplier}× pace` : "weak" },
+      { name: "OR trap window", score: 10, state: "10:15–13:30 active" },
+    ],
+    timeframe_alignment: {
+      daily: "failed breakdown below opening range low",
+      intraday: "OR trap — long back to VWAP",
       vwap: `${distPct.toFixed(2)}% below VWAP`,
     },
     expires_at: new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString(),
