@@ -84,7 +84,11 @@ function computeTradePlan(alert: AlertFeedItem): TradePlan {
   const entry = alert.current_price;
   // Prefer the snapshotted take_profit_price (set at alert creation) over live VWAP,
   // so the displayed target doesn't flip direction as VWAP drifts during the session.
-  const takeProfit = alert.take_profit_price ?? alert.vwap;
+  // Guard: if TP ends up on the wrong side of entry (can happen for old alerts that
+  // pre-date the take_profit_price column), treat it as unavailable.
+  const rawTp = alert.take_profit_price ?? alert.vwap;
+  const takeProfit =
+    rawTp === null || (bearish ? rawTp >= entry : rawTp <= entry) ? null : rawTp;
   // 1% stop from entry — matches sl_stop=0.01 in the validated vectorbt backtest.
   const stopLoss = bearish ? entry * 1.01 : entry * 0.99;
   const profitMargin =
