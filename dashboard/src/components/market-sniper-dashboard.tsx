@@ -41,8 +41,8 @@ const percentFormat = new Intl.NumberFormat("en-IN", {
   minimumFractionDigits: 2,
 });
 
-const FRESH_MS = 30_000;
-const AGING_MS = 120_000;
+const FRESH_MS = 5 * 60_000;   // fresh for one full scan cycle (5 min)
+const AGING_MS = 15 * 60_000;  // aging up to 15 min, stale after that
 
 type RrQuality = "good" | "marginal" | "poor";
 
@@ -258,22 +258,30 @@ export function MarketSniperDashboard({
       return true;
     });
 
+    let sorted: typeof filtered;
     if (sortMode === "conviction") {
-      return [...filtered].sort(
+      sorted = [...filtered].sort(
         (a, b) => b.conviction_score - a.conviction_score,
       );
-    }
-    if (sortMode === "rr") {
-      return [...filtered].sort((a, b) => {
+    } else if (sortMode === "rr") {
+      sorted = [...filtered].sort((a, b) => {
         const ra = computeTradePlan(a).rr ?? -Infinity;
         const rb = computeTradePlan(b).rr ?? -Infinity;
         return rb - ra;
       });
+    } else {
+      sorted = [...filtered].sort(
+        (a, b) =>
+          new Date(b.detected_at).getTime() - new Date(a.detected_at).getTime(),
+      );
     }
-    return [...filtered].sort(
-      (a, b) =>
-        new Date(b.detected_at).getTime() - new Date(a.detected_at).getTime(),
-    );
+
+    // Always float open trades to the top
+    return sorted.sort((a, b) => {
+      const aOpen = openedAlertIds.has(a.id) ? 0 : 1;
+      const bOpen = openedAlertIds.has(b.id) ? 0 : 1;
+      return aOpen - bOpen;
+    });
   })();
 
   async function paperTrade(alert: AlertFeedItem, quantity: number) {
@@ -599,6 +607,50 @@ export function MarketSniperDashboard({
   );
 }
 
+function TradingViewChart({ symbol }: { symbol: string }) {
+  const ref = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    const el = ref.current;
+    if (!el) return;
+    el.innerHTML = "";
+
+    const widget = document.createElement("div");
+    widget.className = "tradingview-widget-container__widget";
+    widget.style.height = "100%";
+    widget.style.width = "100%";
+    el.appendChild(widget);
+
+    const script = document.createElement("script");
+    script.src =
+      "https://s3.tradingview.com/external-embedding/embed-widget-advanced-chart.js";
+    script.async = true;
+    script.textContent = JSON.stringify({
+      autosize: true,
+      symbol: `NSE:${symbol}`,
+      interval: "5",
+      timezone: "Asia/Kolkata",
+      theme: "light",
+      style: "1",
+      locale: "en",
+      hide_top_toolbar: false,
+      hide_legend: false,
+      studies: ["VWAP@tv-basicstudies"],
+    });
+    el.appendChild(script);
+
+    return () => { el.innerHTML = ""; };
+  }, [symbol]);
+
+  return (
+    <div
+      ref={ref}
+      className="tradingview-widget-container"
+      style={{ height: 300 }}
+    />
+  );
+}
+
 function AlertCard({
   alert,
   isOpened,
@@ -758,14 +810,7 @@ function AlertCard({
         className={`overflow-hidden rounded-md border transition-[max-height] duration-300 ${showChart ? `mt-3 ${ui.subtlePanel}` : "border-transparent"}`}
       >
         {showChart ? (
-          <iframe
-            src={`https://www.tradingview.com/widgetsnext/embed/symbol/?symbol=NSE:${alert.symbol}&interval=5&studies=VWAP@tv-basicstudies`}
-            width="100%"
-            height="300"
-            style={{ border: 0 }}
-            allowFullScreen
-            title={`TradingView chart for NSE:${alert.symbol}`}
-          />
+          <TradingViewChart symbol={alert.symbol} />
         ) : null}
       </div>
     </article>
