@@ -56,6 +56,8 @@ const NIFTY200_SYMBOLS = [
   "SBICARD", "SOBHA", "STARHEALTH", "SUNDARMFIN", "SUPREMEIND",
   "SYNGENE", "TATACHEM", "TATAELXSI", "TORNTPOWER", "TRIDENT",
   "UBL", "UNIONBANK", "VOLTAS", "WHIRLPOOL", "RAYMOND",
+  // High-liquidity additions outside Nifty 200
+  "BSE", "CDSL", "MCX",
 ] as const;
 
 type DbInstrument = {

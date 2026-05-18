@@ -44,6 +44,14 @@ function isOrTrapWindow(): boolean {
   return (h === 10 && m >= 15) || h === 11 || h === 12 || (h === 13 && m <= 30);
 }
 
+// 10:15–14:30 IST — momentum breakout window (wider than trap window).
+function isOrBreakoutWindow(): boolean {
+  const nowIst = new Date(Date.now() + 5.5 * 3600 * 1000);
+  const h = nowIst.getUTCHours();
+  const m = nowIst.getUTCMinutes();
+  return (h === 10 && m >= 15) || h === 11 || h === 12 || h === 13 || (h === 14 && m <= 30);
+}
+
 function minutesSinceOpen(): number {
   const nowIst = new Date(Date.now() + 5.5 * 3600 * 1000);
   return Math.max(1, (nowIst.getUTCHours() - 9) * 60 + nowIst.getUTCMinutes() - 15);
@@ -81,8 +89,9 @@ Deno.serve(async () => {
 
   const inMorning = isMorningTrapWindow();
   const inOrWindow = isOrTrapWindow();
+  const inBreakoutWindow = isOrBreakoutWindow();
 
-  if (!inMorning && !inOrWindow) {
+  if (!inMorning && !inOrWindow && !inBreakoutWindow) {
     return Response.json({ skipped: "outside all active signal windows" });
   }
 
@@ -105,7 +114,9 @@ Deno.serve(async () => {
     const bullish = buildBullishAlert(inst, today);
     const orBearish = buildOrTrapBearish(inst, today);
     const orBullish = buildOrTrapBullish(inst, today);
-    return [bearish, bullish, orBearish, orBullish].filter(Boolean);
+    const orBreakBullish = buildOrBreakoutBullish(inst, today);
+    const orBreakBearish = buildOrBreakoutBearish(inst, today);
+    return [bearish, bullish, orBearish, orBullish, orBreakBullish, orBreakBearish].filter(Boolean);
   });
 
   if (alerts.length === 0) return Response.json({ inserted: 0 });
@@ -352,6 +363,119 @@ function buildOrTrapBullish(inst: Instrument, today: string) {
       daily: "failed breakdown below opening range low",
       intraday: "OR trap — long back to VWAP",
       vwap: `${distPct.toFixed(2)}% below VWAP`,
+    },
+    expires_at: new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString(),
+  };
+}
+
+// ---------------------------------------------------------------------------
+// SIGNAL E — Opening Range Breakout (bullish)
+//
+// Price broke above the OR high and is holding the breakout — buy the momentum.
+// Opposite of Signal C (OR Trap): here the breakout is CONFIRMED, not failed.
+// Window extends to 14:30 IST to catch afternoon momentum sessions.
+// ---------------------------------------------------------------------------
+
+function buildOrBreakoutBullish(inst: Instrument, today: string) {
+  if (!isOrBreakoutWindow()) return null;
+
+  const { id, symbol, last_price, or_high, or_date, vwap,
+          session_high, session_volume, prev_day_volume } = inst;
+
+  if (!last_price || !or_high || or_date !== today || !vwap || !session_high) {
+    return null;
+  }
+
+  // Price broke above OR high and is still holding above it — confirmed breakout.
+  const confirmedBreak = last_price > or_high;
+  // Price must be above VWAP (bullish momentum, not a wick above OR then back below VWAP).
+  const aboveVwap = last_price > vwap;
+  // Price hasn't pulled back more than 0.5% from the session high — still near highs.
+  const holdingBreak = last_price >= session_high * 0.995;
+
+  if (!confirmedBreak || !aboveVwap || !holdingBreak) return null;
+
+  const distPct = ((last_price - or_high) / or_high) * 100;
+  const { hasExpansion, multiplier } = volumeStats(session_volume, prev_day_volume);
+  // Breakouts need volume to be reliable — lower base score without expansion.
+  const score = Math.min(95, (hasExpansion ? 65 : 45) + Math.min(20, Math.round(distPct * 4)));
+
+  return {
+    instrument_id: id,
+    dedupe_key: [id, "or_breakout", "bullish", today].join(":"),
+    direction: "bullish",
+    title: `${symbol} — OR breakout (momentum buy)`,
+    thesis: `${symbol} broke above the opening range high (₹${or_high.toFixed(2)}) and is holding the breakout ${distPct.toFixed(2)}% above OR. Price is above VWAP — momentum is confirmed. Buy the continuation.`,
+    trigger_price: or_high,
+    current_price: last_price,
+    swept_level: or_high,
+    swept_level_name: "Opening Range High",
+    volume_multiplier: multiplier,
+    conviction_score: score,
+    score_factors: [
+      { name: "OR breakout confirmed", score: 25, state: `${distPct.toFixed(2)}% above OR` },
+      { name: "Holding near session high", score: 10, state: "within 0.5%" },
+      { name: "Above VWAP", score: 10, state: "bullish bias" },
+      { name: "Volume expansion", score: hasExpansion ? 20 : 0, state: hasExpansion ? `${multiplier}× pace` : "weak — caution" },
+    ],
+    timeframe_alignment: {
+      daily: "confirmed breakout above opening range high",
+      intraday: "momentum buy — trailing stop below OR high",
+      vwap: `${distPct.toFixed(2)}% above OR`,
+    },
+    expires_at: new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString(),
+  };
+}
+
+// ---------------------------------------------------------------------------
+// SIGNAL F — Opening Range Breakdown (bearish momentum)
+//
+// Mirror of Signal E: price broke below the OR low and is holding below it.
+// Short the momentum — price likely heading lower.
+// ---------------------------------------------------------------------------
+
+function buildOrBreakoutBearish(inst: Instrument, today: string) {
+  if (!isOrBreakoutWindow()) return null;
+
+  const { id, symbol, last_price, or_low, or_date, vwap,
+          session_low, session_volume, prev_day_volume } = inst;
+
+  if (!last_price || !or_low || or_date !== today || !vwap || !session_low) {
+    return null;
+  }
+
+  const confirmedBreak = last_price < or_low;
+  const belowVwap = last_price < vwap;
+  const holdingBreak = last_price <= session_low * 1.005;
+
+  if (!confirmedBreak || !belowVwap || !holdingBreak) return null;
+
+  const distPct = ((or_low - last_price) / or_low) * 100;
+  const { hasExpansion, multiplier } = volumeStats(session_volume, prev_day_volume);
+  const score = Math.min(95, (hasExpansion ? 65 : 45) + Math.min(20, Math.round(distPct * 4)));
+
+  return {
+    instrument_id: id,
+    dedupe_key: [id, "or_breakout", "bearish", today].join(":"),
+    direction: "bearish",
+    title: `${symbol} — OR breakdown (momentum short)`,
+    thesis: `${symbol} broke below the opening range low (₹${or_low.toFixed(2)}) and is holding the breakdown ${distPct.toFixed(2)}% below OR. Price is below VWAP — momentum is confirmed bearish. Short the continuation.`,
+    trigger_price: or_low,
+    current_price: last_price,
+    swept_level: or_low,
+    swept_level_name: "Opening Range Low",
+    volume_multiplier: multiplier,
+    conviction_score: score,
+    score_factors: [
+      { name: "OR breakdown confirmed", score: 25, state: `${distPct.toFixed(2)}% below OR` },
+      { name: "Holding near session low", score: 10, state: "within 0.5%" },
+      { name: "Below VWAP", score: 10, state: "bearish bias" },
+      { name: "Volume expansion", score: hasExpansion ? 20 : 0, state: hasExpansion ? `${multiplier}× pace` : "weak — caution" },
+    ],
+    timeframe_alignment: {
+      daily: "confirmed breakdown below opening range low",
+      intraday: "momentum short — trailing stop above OR low",
+      vwap: `${distPct.toFixed(2)}% below OR`,
     },
     expires_at: new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString(),
   };
