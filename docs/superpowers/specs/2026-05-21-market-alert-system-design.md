@@ -52,33 +52,35 @@ The old "Market Sniper" codebase had three terminal problems we are not repeatin
 
 ## Architecture
 
+### v1 (paper trading, months 1–3): Pure Supabase
+
 ```
-                 Angel One SmartAPI
-                  /              \
-            (REST)              (WebSocket)
-              |                      |
-              v                      v
- +---------------------+   +-----------------------+
- | Supabase Edge Func  |   | Node WebSocket Worker |
- | (cron, 1-min)       |   | (Railway, market hrs) |
- | - ORB scanner       |   | - Real-time tick feed |
- | - Entry placement   |   | - Stop/target monitor |
- | - Incident sweeper  |   | - Emergency flatten   |
- +---------------------+   +-----------------------+
-              \                      /
-               \                    /
-                v                  v
+                 Angel One SmartAPI (REST only)
+                          |
+                          v
+              +------------------------+
+              | Supabase Edge Function |
+              | (cron, 1-min)          |
+              | - Candle ingest        |
+              | - ORB scanner          |
+              | - Paper exec & exits   |
+              | - Heartbeat & EOD      |
+              +------------------------+
+                          |
+                          v
               +----------------------+
               |     Supabase DB      |
-              |   (source of truth)  |
               +----------------------+
                   /        |        \
                  v         v         v
             Telegram   Dashboard   Tuning Run
-             (feed)   (Next.js)   (weekly cron)
 ```
 
-See `docs/adr/0003-hybrid-serverless-websocket-architecture.md` for the architecture rationale.
+Paper trades use 1-minute candle OHLC to detect stop/target hits — industry-standard for simulated execution. No real-time tick feed needed because no real orders are placed.
+
+### v1.2+ (real money): Add a Mumbai/Bangalore DigitalOcean droplet
+
+Once paper trading proves edge, add a small Node WebSocket worker on a **DigitalOcean Bangalore droplet** (covered by GitHub Student Pack credit — $200 = ~40 months of $5/mo droplet). The droplet maintains a persistent WebSocket to Angel One for sub-second stop/target execution on real orders. Supabase remains the database; the droplet is purely the execution arm. See `docs/adr/0003-hybrid-serverless-websocket-architecture.md` for full rationale.
 
 ---
 

@@ -1,0 +1,14 @@
+{
+  "name": "indian-market-scanner-orchestrator",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Sandcastle orchestrator for the auto paper-trading bot. The bot itself lives in bot/. This package.json is for running the Codex multi-agent loop only.",
+  "scripts": {
+    "sandcastle": "sh -lc 'set -a; [ -f .sandcastle/.env ] && . .sandcastle/.env; set +a; docker build -t sandcastle:indian-market-scanner .sandcastle && npx tsx .sandcastle/main.mts'"
+  },
+  "type": "commonjs",
+  "devDependencies": {
+    "@ai-hero/sandcastle": "^0.5.6",
+    "tsx": "^4.21.0"
+  }
+}
