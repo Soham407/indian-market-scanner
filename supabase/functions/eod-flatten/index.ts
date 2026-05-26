@@ -1,5 +1,6 @@
 import { createServiceClient } from "../_shared/supabase.ts";
 import { getMarketSessionStatus } from "../_shared/market-hours.ts";
+import { sendTelegramNotification } from "../_shared/telegram.ts";
 
 const EOD_TIME = 15 * 60 + 15; // 3:15 PM IST in minutes since midnight
 const DAILY_LOSS_CIRCUIT_BREAKER = -3000; // -₹3000 = -3%
@@ -102,6 +103,13 @@ Deno.serve(async () => {
       .from("bot_config")
       .update({ trading_enabled: false, circuit_breaker_triggered_at: now.toISOString() })
       .eq("id", 1); // Assuming single config row
+
+    await sendTelegramNotification({
+      type: "circuit_breaker",
+      symbol: "BOT",
+      timestamp: now.toISOString(),
+      message: `Daily loss ₹${dailyPnl.toFixed(0)} exceeded ₹3,000 limit`,
+    });
 
     return Response.json({
       status: "Circuit breaker triggered",

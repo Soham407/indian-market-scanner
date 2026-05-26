@@ -1,5 +1,6 @@
 import { createServiceClient } from "../_shared/supabase.ts";
 import { getMarketSessionStatus } from "../_shared/market-hours.ts";
+import { sendTelegramNotification } from "../_shared/telegram.ts";
 
 const EXCHANGE = "NSE";
 const OR_WINDOW_END = 9 * 60 + 30; // 9:30 IST in minutes since midnight
@@ -113,7 +114,7 @@ Deno.serve(async () => {
 
   const { data: instruments } = await supabase
     .from("instruments")
-    .select("id,symbol,or_high,or_low,or_date")
+    .select("id,symbol,name,or_high,or_low,or_date")
     .eq("exchange", EXCHANGE)
     .in("symbol", [...NIFTY_50_SYMBOLS]);
 
@@ -188,6 +189,17 @@ Deno.serve(async () => {
 
         if (!insertError) {
           tradesPlaced++;
+          await sendTelegramNotification({
+            type: "entry",
+            symbol: `${inst.symbol} (${inst.name})`,
+            side: "long",
+            entryPrice: actualEntry,
+            targetPrice: targetPriceCalc,
+            stopLossPrice: stopPrice,
+            riskAmount: riskPerTrade,
+            shares,
+            timestamp: new Date().toISOString(),
+          });
         }
       }
     }
@@ -224,6 +236,17 @@ Deno.serve(async () => {
 
         if (!insertError) {
           tradesPlaced++;
+          await sendTelegramNotification({
+            type: "entry",
+            symbol: `${inst.symbol} (${inst.name})`,
+            side: "short",
+            entryPrice: actualEntry,
+            targetPrice: targetPriceCalc,
+            stopLossPrice: stopPrice,
+            riskAmount: riskPerTrade,
+            shares,
+            timestamp: new Date().toISOString(),
+          });
         }
       }
     }

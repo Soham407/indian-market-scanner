@@ -1,5 +1,6 @@
 import { createServiceClient } from "../_shared/supabase.ts";
 import { getMarketSessionStatus } from "../_shared/market-hours.ts";
+import { sendTelegramNotification } from "../_shared/telegram.ts";
 
 const BROKERAGE_PER_LEG = 20;
 const STATUTORY_FEE_PCT = 0.0005; // 0.05%
@@ -13,11 +14,11 @@ Deno.serve(async () => {
   const supabase = createServiceClient();
   let exitsProcessed = 0;
 
-  // Get all open trades
+  // Get all open trades with instrument info
   const { data: openTrades, error: tradesError } = await supabase
     .from("bot_paper_trades")
     .select(
-      "id,instrument_id,side,entry_price,stop_loss_price,target_price,shares,risk_amount",
+      "id,instrument_id,side,entry_price,stop_loss_price,target_price,shares,risk_amount,instruments(symbol,name)",
     )
     .eq("status", "open");
 
@@ -100,6 +101,16 @@ Deno.serve(async () => {
 
       if (!updateError) {
         exitsProcessed++;
+        const instrument = trade.instruments as { symbol: string; name: string } | null;
+        await sendTelegramNotification({
+          type: "exit",
+          symbol: instrument ? `${instrument.symbol} (${instrument.name})` : "UNKNOWN",
+          exitPrice: exitPriceWithSlippage,
+          exitReason: exitReason,
+          pnl: grossPnl,
+          netPnl: netPnl,
+          timestamp: candle.candle_open_at,
+        });
       }
     }
   }
