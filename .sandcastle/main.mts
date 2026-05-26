@@ -1,22 +1,20 @@
-// Parallel Planner — three-phase orchestration loop (in-repo variant)
+// Parallel Planner — four-phase orchestration loop (in-repo variant)
 //
-// This template drives a multi-phase workflow:
-//   Phase 1 (Plan):    A Codex agent reads issues labeled ready-for-agent,
-//                      builds a dependency graph, and outputs a <plan> JSON
-//                      listing unblocked issues with branch names.
-//   Phase 2 (Execute): N Codex agents run in parallel via Promise.allSettled,
-//                      each working a single issue on its own branch.
-//   Phase 3 (Merge):   A Codex agent merges all branches that produced commits.
+// Phases per iteration:
+//   1. Plan    — Codex agent reads ready-for-agent issues, builds dependency
+//                graph, outputs <plan> JSON listing unblocked issues + branch.
+//   2. Execute — N Codex agents run in parallel, each working a single issue
+//                on its own branch, following TDD discipline.
+//   3. Review  — One Codex review agent per completed branch verifies
+//                acceptance criteria, TDD compliance, hard-rule adherence,
+//                and that tests pass. Outputs <verdict>APPROVE</verdict>
+//                or REJECT.
+//   4. Merge   — A Codex agent merges only the APPROVED branches, runs
+//                feedback loops, and closes the corresponding issues.
 //
-// The outer loop repeats up to MAX_ITERATIONS times so newly unblocked
-// issues are picked up after each round of merges.
-//
-// Usage:
-//   npm run sandcastle
-//
-// NOTE: This orchestrator lives INSIDE the target repo (cwd = ".").
-// Sandcastle creates isolated git worktrees per agent so parallel
-// branches don't collide with the orchestrator's own working tree.
+// The outer loop repeats up to MAX_ITERATIONS times. Rejected branches stay
+// open with a comment on the issue; the next iteration may pick them up if
+// they're still labelled ready-for-agent.
 
 import * as sandcastle from "@ai-hero/sandcastle";
 import { docker } from "@ai-hero/sandcastle/sandboxes/docker";
@@ -24,13 +22,7 @@ import { readFileSync, statSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 
-// ---------------------------------------------------------------------------
-// Configuration
-// ---------------------------------------------------------------------------
-
 const MAX_ITERATIONS = 10;
-
-// In-repo target: agents operate on this repo itself.
 const cwd = ".";
 
 const codexHome = path.resolve(
@@ -108,7 +100,7 @@ const sandbox = docker({
 for (let iteration = 1; iteration <= MAX_ITERATIONS; iteration++) {
   console.log(`\n=== Iteration ${iteration}/${MAX_ITERATIONS} ===\n`);
 
-  // Phase 1: Plan
+  // ----- Phase 1: Plan -----
   const plan = await sandcastle.run({
     cwd,
     hooks,
@@ -142,7 +134,7 @@ for (let iteration = 1; iteration <= MAX_ITERATIONS; iteration++) {
     console.log(`  ${issue.id}: ${issue.title} → ${issue.branch}`);
   }
 
-  // Phase 2: Execute
+  // ----- Phase 2: Execute -----
   const settled = await Promise.allSettled(
     issues.map((issue) =>
       sandcastle.run({
@@ -188,21 +180,79 @@ for (let iteration = 1; iteration <= MAX_ITERATIONS; iteration++) {
     )
     .map((entry) => entry.issue);
 
-  const completedBranches = completedIssues.map((i) => i.branch);
-
   console.log(
-    `\nExecution complete. ${completedBranches.length} branch(es) with commits:`,
+    `\nExecution complete. ${completedIssues.length} branch(es) with commits.`,
   );
-  for (const branch of completedBranches) {
-    console.log(`  ${branch}`);
-  }
 
-  if (completedBranches.length === 0) {
-    console.log("No commits produced. Nothing to merge.");
+  if (completedIssues.length === 0) {
+    console.log("No commits produced. Nothing to review or merge.");
     continue;
   }
 
-  // Phase 3: Merge
+  // ----- Phase 3: Review -----
+  console.log(`\nRunning review on ${completedIssues.length} branch(es)...\n`);
+
+  const reviewed = await Promise.allSettled(
+    completedIssues.map((issue) =>
+      sandcastle.run({
+        cwd,
+        hooks,
+        sandbox,
+        branchStrategy: { type: "branch", branch: issue.branch },
+        name: `reviewer-${issue.id}`,
+        maxIterations: 20,
+        // Use xhigh for review — strict gatekeeping benefits from strongest reasoning.
+        agent: sandcastle.codex("gpt-5.3-codex", { effort: "xhigh" }),
+        promptFile: "./.sandcastle/review-prompt.md",
+        promptArgs: {
+          TASK_ID: issue.id,
+          ISSUE_TITLE: issue.title,
+          BRANCH: issue.branch,
+        },
+      }),
+    ),
+  );
+
+  const approvedIssues: typeof completedIssues = [];
+
+  for (let i = 0; i < reviewed.length; i++) {
+    const outcome = reviewed[i]!;
+    const issue = completedIssues[i]!;
+    if (outcome.status === "rejected") {
+      console.error(
+        `  ✗ review ${issue.id} (${issue.branch}) errored: ${outcome.reason}`,
+      );
+      continue;
+    }
+    const stdout = outcome.value.stdout;
+    const verdictMatch = stdout.match(/<verdict>(APPROVE|REJECT)<\/verdict>/);
+    if (!verdictMatch) {
+      console.error(
+        `  ⚠ review ${issue.id} (${issue.branch}) produced no <verdict> — treating as REJECT`,
+      );
+      continue;
+    }
+    if (verdictMatch[1] === "APPROVE") {
+      console.log(`  ✓ APPROVED ${issue.id}: ${issue.title}`);
+      approvedIssues.push(issue);
+    } else {
+      console.log(
+        `  ✗ REJECTED ${issue.id}: ${issue.title} (review comments on issue)`,
+      );
+    }
+  }
+
+  if (approvedIssues.length === 0) {
+    console.log("No branches approved. Nothing to merge.");
+    continue;
+  }
+
+  // ----- Phase 4: Merge -----
+  const approvedBranches = approvedIssues.map((i) => i.branch);
+  console.log(
+    `\nMerging ${approvedBranches.length} approved branch(es)...\n`,
+  );
+
   await sandcastle.run({
     cwd,
     hooks,
@@ -212,17 +262,20 @@ for (let iteration = 1; iteration <= MAX_ITERATIONS; iteration++) {
     agent: sandcastle.codex("gpt-5.3-codex", { effort: "medium" }),
     promptFile: "./.sandcastle/merge-prompt.md",
     promptArgs: {
-      BRANCHES: completedBranches.map((b) => `- ${b}`).join("\n"),
-      ISSUES: completedIssues
+      BRANCHES: approvedBranches.map((b) => `- ${b}`).join("\n"),
+      ISSUES: approvedIssues
         .map((i) => `- ${i.id}: ${i.title}`)
         .join("\n"),
-      CLOSE_COMMANDS: completedIssues
-        .map((i) => `gh issue close ${i.id} --comment "Completed by Sandcastle"`)
+      CLOSE_COMMANDS: approvedIssues
+        .map(
+          (i) =>
+            `gh issue close ${i.id} --comment "Completed by Sandcastle (review-approved)"`,
+        )
         .join("\n"),
     },
   });
 
-  console.log("\nBranches merged.");
+  console.log("\nApproved branches merged.");
 }
 
 console.log("\nAll done.");
