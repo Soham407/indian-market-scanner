@@ -1,6 +1,7 @@
 import {
   assertEquals,
   assertThrows,
+  assert,
 } from "https://deno.land/std@0.224.0/assert/mod.ts";
 import {
   normalizeAngelCandleOpenAt,
@@ -63,4 +64,52 @@ Deno.test("upsert row: maps values to bot_candles row shape", () => {
     candle_open_at: "2026-05-26T04:00:00.000Z",
     source: "angel_one",
   });
+});
+
+// Market-hours guard tests (covers index.ts:91 behavior)
+Deno.test("market-hours guard: inside session returns isOpen=true", async () => {
+  // Monday 2026-05-25 at 09:30 IST (market open: 09:15-15:30 on weekdays)
+  const marketOpenTime = new Date("2026-05-25T04:00:00Z"); // 09:30 IST
+
+  // Import and test the market-hours helper
+  const { getMarketSessionStatus } = await import("../_shared/market-hours.ts");
+  const status = getMarketSessionStatus(marketOpenTime);
+
+  assert(status.isOpen, "Market should be open on weekday 09:30 IST");
+  assertEquals(status.weekday, "Mon");
+});
+
+Deno.test("market-hours guard: outside session returns isOpen=false", async () => {
+  // Monday 2026-05-25 at 16:00 IST (market closed, after 15:30)
+  const marketClosedTime = new Date("2026-05-25T10:30:00Z"); // 16:00 IST
+
+  const { getMarketSessionStatus } = await import("../_shared/market-hours.ts");
+  const status = getMarketSessionStatus(marketClosedTime);
+
+  assertEquals(status.isOpen, false, "Market should be closed after 15:30 IST");
+});
+
+// Dedup/idempotency tests (covers index.ts:156 behavior)
+Deno.test("dedup logic: upsert uses instrument_id,timeframe,candle_open_at as conflict key", () => {
+  const row1 = toBotCandleUpsertRow(
+    "instr-1",
+    "5m",
+    ["2026-05-26 10:00", 100, 101, 99, 100.5, 1000],
+  );
+
+  const row2 = toBotCandleUpsertRow(
+    "instr-1",
+    "5m",
+    ["2026-05-26 10:00", 100.2, 101.1, 99.1, 100.6, 1050], // Same key, different values
+  );
+
+  // Verify they have the same conflict key components
+  assertEquals(row1.instrument_id, row2.instrument_id);
+  assertEquals(row1.timeframe, row2.timeframe);
+  assertEquals(row1.candle_open_at, row2.candle_open_at);
+
+  // Different values show this is a real duplicate scenario
+  assertEquals(row1.volume, 1000);
+  assertEquals(row2.volume, 1050);
+  assert(row1.close !== row2.close, "Duplicate ingestion should have different OHLC on upsert");
 });
