@@ -1,0 +1,154 @@
+╔════════════════════════════════════════════════════════════════════════════════╗
+║        🚀 PAPER TRADING BOT - MORNING CHECKLIST (2026-05-27 9:15 AM IST)        ║
+╚════════════════════════════════════════════════════════════════════════════════╝
+
+TIME: 9:10 AM IST (5 minutes before market open)
+
+┌─ STEP 1: Verify Bot Systems ────────────────────────────────────────────────┐
+│                                                                               │
+│  Run this quick verification:                                               │
+│  ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ │
+│                                                                               │
+│  1. Check cron jobs are active:                                             │
+│     supabase db query "SELECT jobname, active FROM cron.job                 │
+│     WHERE jobname LIKE 'bot-%';" --linked                                   │
+│                                                                               │
+│     Should see:                                                              │
+│     ✓ bot-orb-scanner (active: true)                                        │
+│     ✓ bot-check-exits (active: true)                                        │
+│     ✓ bot-eod-flatten (active: true)                                        │
+│     ✓ bot-health-check (active: true)                                       │
+│                                                                               │
+│  2. Check trading enabled:                                                  │
+│     supabase db query "SELECT trading_enabled FROM bot_config               │
+│     WHERE id = 1;" --linked                                                 │
+│                                                                               │
+│     Should see:                                                              │
+│     ✓ trading_enabled: true                                                 │
+│                                                                               │
+│  3. Check secrets configured:                                               │
+│     supabase secrets list --project-ref gykgrrjiqkucstcyrgxp                │
+│                                                                               │
+│     Should see all set:                                                      │
+│     ✓ telegram_bot_token                                                    │
+│     ✓ telegram_chat_id                                                      │
+│     ✓ market_sniper_anon_jwt                                                │
+│     ✓ market_sniper_project_url                                             │
+│                                                                               │
+│  4. Test Telegram (get one message):                                        │
+│     ./test-telegram.sh                                                      │
+│                                                                               │
+│     Should show:                                                             │
+│     ✓ All secrets verified                                                  │
+│     ✓ Ready for trading                                                     │
+│                                                                               │
+└───────────────────────────────────────────────────────────────────────────────┘
+
+┌─ STEP 2: Monitor Telegram ──────────────────────────────────────────────────┐
+│                                                                               │
+│  At 9:15 AM IST:                                                            │
+│  ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ │
+│                                                                               │
+│  Watch Telegram @TMTMarketscanner_bot for:                                  │
+│                                                                               │
+│  🟢 First heartbeat message (should arrive within 5 min)                    │
+│     "🤖 BOT HEARTBEAT"                                                      │
+│     Trading: ✅ ENABLED                                                     │
+│     Open Trades: 0                                                          │
+│     Daily P&L: ₹0                                                           │
+│                                                                               │
+│  📈 Entry alerts as breakouts detected                                      │
+│     "📈 LONG Entry - SYMBOL @ Price"                                        │
+│                                                                               │
+│  ✅ Exit alerts when positions close                                        │
+│     "✅ Exit - SYMBOL"                                                      │
+│     Net P&L: ₹XXXX                                                          │
+│                                                                               │
+└───────────────────────────────────────────────────────────────────────────────┘
+
+┌─ STEP 3: Monitor Dashboard ─────────────────────────────────────────────────┐
+│                                                                               │
+│  Open: https://indian-market-scanner.vercel.app/dashboard                   │
+│                                                                               │
+│  Watch for:                                                                 │
+│  ✓ Trading status: "ENABLED" (green)                                        │
+│  ✓ Open Trades count updating                                               │
+│  ✓ Daily P&L updating in real-time                                          │
+│                                                                               │
+└───────────────────────────────────────────────────────────────────────────────┘
+
+┌─ STEP 4: During Trading Hours (9:15 AM - 3:30 PM IST) ─────────────────────┐
+│                                                                               │
+│  Every 30 minutes:                                                          │
+│  ☐ Check Telegram has new messages (proves bot running)                     │
+│  ☐ Check dashboard open trade count                                         │
+│  ☐ Verify daily P&L updates                                                │
+│  ☐ Look for any error messages                                              │
+│                                                                               │
+│  Track these numbers:                                                       │
+│  • Total trades executed                                                    │
+│  • Wins vs losses                                                           │
+│  • Average win size                                                         │
+│  • Average loss size                                                        │
+│                                                                               │
+│  IF CIRCUIT BREAKER TRIGGERS (₹-3,000 loss):                                │
+│  ⛔ Trading automatically stops                                              │
+│  ⛔ Get alert: "⛔ CIRCUIT BREAKER TRIGGERED"                                │
+│  ⛔ All positions automatically closed                                       │
+│  ⛔ Resume tomorrow at 9:15 AM                                               │
+│                                                                               │
+└───────────────────────────────────────────────────────────────────────────────┘
+
+┌─ STEP 5: After Market Close (3:30+ PM IST) ────────────────────────────────┐
+│                                                                               │
+│  At 3:15 PM IST:                                                            │
+│  ☐ eod-flatten job runs automatically                                       │
+│  ☐ All open positions closed                                                │
+│  ☐ Daily P&L finalized                                                      │
+│  ☐ Get final summary on Telegram                                            │
+│                                                                               │
+│  Review Results:                                                            │
+│  ☐ Total trades: _____ (target: 5-20)                                       │
+│  ☐ Winning trades: _____ of _____                                           │
+│  ☐ Daily P&L: ₹_____ (±)                                                    │
+│  ☐ Circuit breaker triggered: YES / NO                                      │
+│  ☐ Any errors: YES / NO                                                     │
+│                                                                               │
+│  If profitable and no errors → ✅ READY FOR DAY 2                            │
+│  If losses or issues → 📝 NOTE THEM DOWN FOR TUNING                          │
+│                                                                               │
+└───────────────────────────────────────────────────────────────────────────────┘
+
+┌─ TROUBLESHOOTING QUICK LINKS ──────────────────────────────────────────────┐
+│                                                                               │
+│  If something breaks:                                                       │
+│                                                                               │
+│  No Telegram messages?                                                      │
+│  → Run: ./test-telegram.sh                                                  │
+│  → Check: telegram_bot_token is set                                         │
+│  → Verify: Chat ID is correct (1523552953)                                  │
+│                                                                               │
+│  No trades being created?                                                   │
+│  → Check instruments have NIFTY-50 symbols                                  │
+│  → Check bot_candles table has data                                         │
+│  → Verify OR window building correctly                                      │
+│                                                                               │
+│  High losses?                                                               │
+│  → This is paper trading - no money lost!                                   │
+│  → Note the issues for optimization                                         │
+│  → Strategy tuning happens after first few days                             │
+│                                                                               │
+│  Manual inspection:                                                         │
+│  → Recent trades: SELECT * FROM bot_paper_trades ORDER BY entry_time DESC   │
+│  → Daily P&L: SELECT SUM(net_pnl) FROM bot_paper_trades WHERE               │
+│               DATE(exit_time) = TODAY()                                     │
+│  → Errors: SELECT * FROM bot_incidents ORDER BY created_at DESC             │
+│                                                                               │
+└───────────────────────────────────────────────────────────────────────────────┘
+
+╔════════════════════════════════════════════════════════════════════════════════╗
+║                   DEPLOYMENT TIME: 9:15 AM IST (Tuesday)                       ║
+║              BOT STATUS: ✅ READY | MARKET STATUS: 🟢 OPENING                 ║
+╚════════════════════════════════════════════════════════════════════════════════╝
+
+Good luck! 🚀
