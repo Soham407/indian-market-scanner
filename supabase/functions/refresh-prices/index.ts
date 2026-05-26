@@ -6,9 +6,14 @@
 
 import { createServiceClient } from "../_shared/supabase.ts";
 import { getMarketSessionStatus } from "../_shared/market-hours.ts";
+import {
+  angelGetCandleData,
+  angelGetMarketData,
+  authenticateAngelOne,
+  type AngelQuote,
+} from "../_shared/angel-one.ts";
 
 const EXCHANGE = "NSE";
-const ANGEL_BASE = "https://apiconnect.angelone.in";
 
 // True during 09:15–10:14 IST — the window in which we snapshot the opening range.
 function isOrBuildWindow(): boolean {
@@ -72,140 +77,6 @@ type DbInstrument = {
   or_date: string | null;
 };
 
-type AngelQuote = {
-  symbolToken: string;
-  tradingSymbol: string;
-  open: number;
-  high: number;
-  low: number;
-  close: number;
-  ltp: number;
-  volume: number;
-  avgPrice?: number;
-  averagePrice?: number;
-};
-
-// ---------------------------------------------------------------------------
-// Native TOTP — no npm dependency, uses Deno's built-in crypto.subtle
-// ---------------------------------------------------------------------------
-
-async function generateTotp(secret: string): Promise<string> {
-  // Strip hyphens and whitespace to normalise UUID-style secrets
-  const stripped = secret.replace(/[-\s]/g, "");
-  const isHex = /^[0-9a-fA-F]+$/.test(stripped) && stripped.length % 2 === 0;
-
-  let keyBytes: Uint8Array;
-  if (isHex) {
-    // Angel One "Secret Key" is a UUID / hex string — decode as raw hex bytes
-    keyBytes = new Uint8Array(stripped.length / 2);
-    for (let i = 0; i < keyBytes.length; i++) {
-      keyBytes[i] = parseInt(stripped.slice(i * 2, i * 2 + 2), 16);
-    }
-  } else {
-    // Standard base32 TOTP seed (Google Authenticator)
-    const alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZ234567";
-    const cleaned = stripped.toUpperCase().replace(/=/g, "");
-    let bits = "";
-    for (const ch of cleaned) {
-      const v = alphabet.indexOf(ch);
-      bits += (v === -1 ? 0 : v).toString(2).padStart(5, "0");
-    }
-    keyBytes = new Uint8Array(Math.floor(bits.length / 8));
-    for (let i = 0; i < keyBytes.length; i++) {
-      keyBytes[i] = parseInt(bits.slice(i * 8, i * 8 + 8), 2);
-    }
-  }
-
-  const counter = Math.floor(Date.now() / 1000 / 30);
-  const msg = new Uint8Array(8);
-  let c = counter;
-  for (let i = 7; i >= 0; i--) { msg[i] = c & 0xff; c = Math.floor(c / 256); }
-
-  const key = await crypto.subtle.importKey("raw", keyBytes, { name: "HMAC", hash: "SHA-1" }, false, ["sign"]);
-  const mac = new Uint8Array(await crypto.subtle.sign("HMAC", key, msg));
-
-  const offset = mac[19] & 0x0f;
-  const code = ((mac[offset] & 0x7f) << 24) | ((mac[offset + 1] & 0xff) << 16) |
-    ((mac[offset + 2] & 0xff) << 8) | (mac[offset + 3] & 0xff);
-  return (code % 1_000_000).toString().padStart(6, "0");
-}
-
-// ---------------------------------------------------------------------------
-// Angel One direct HTTP helpers — no npm SmartAPI SDK
-// ---------------------------------------------------------------------------
-
-function angelHeaders(apiKey: string, jwtToken?: string): Record<string, string> {
-  const h: Record<string, string> = {
-    "Content-Type": "application/json",
-    "Accept": "application/json",
-    "X-UserType": "USER",
-    "X-SourceID": "WEB",
-    "X-ClientLocalIP": "127.0.0.1",
-    "X-ClientPublicIP": "1.1.1.1",
-    "X-MACAddress": "00-00-00-00-00-00",
-    "X-PrivateKey": apiKey,
-  };
-  if (jwtToken) h["Authorization"] = `Bearer ${jwtToken}`;
-  return h;
-}
-
-async function angelLogin(apiKey: string, clientId: string, pin: string, totp: string): Promise<string> {
-  const resp = await fetch(`${ANGEL_BASE}/rest/auth/angelbroking/user/v1/loginByPassword`, {
-    method: "POST",
-    headers: angelHeaders(apiKey),
-    body: JSON.stringify({ clientcode: clientId, password: pin, totp }),
-  });
-  const data = await resp.json();
-  if (!data?.status || !data?.data?.jwtToken) {
-    throw new Error(`Angel One login failed: ${data?.message ?? JSON.stringify(data)}`);
-  }
-  return data.data.jwtToken as string;
-}
-
-
-async function angelGetMarketData(
-  apiKey: string, jwtToken: string, exchange: string, tokens: string[],
-): Promise<AngelQuote[]> {
-  const resp = await fetch(`${ANGEL_BASE}/rest/secure/angelbroking/market/v1/quote/`, {
-    method: "POST",
-    headers: angelHeaders(apiKey, jwtToken),
-    body: JSON.stringify({ mode: "FULL", exchangeTokens: { [exchange]: tokens } }),
-  });
-  const data = await resp.json();
-  return (data?.data?.fetched ?? []) as AngelQuote[];
-}
-
-async function angelGetCandleData(
-  apiKey: string, jwtToken: string,
-  params: { exchange: string; symboltoken: string; interval: string; fromdate: string; todate: string },
-): Promise<[string, number, number, number, number, number][]> {
-  const resp = await fetch(`${ANGEL_BASE}/rest/secure/angelbroking/historical/v1/getCandleData`, {
-    method: "POST",
-    headers: angelHeaders(apiKey, jwtToken),
-    body: JSON.stringify(params),
-  });
-  const data = await resp.json();
-  return (data?.data ?? []) as [string, number, number, number, number, number][];
-}
-
-// ---------------------------------------------------------------------------
-// Authentication
-// ---------------------------------------------------------------------------
-
-async function authenticate(): Promise<{ apiKey: string; jwtToken: string }> {
-  const apiKey = Deno.env.get("AngelOne_Apikey");
-  const secretKey = Deno.env.get("AngelOne_SecretKey");
-  const clientId = Deno.env.get("AngelOne_ClientID");
-  const pin = Deno.env.get("AngelOne_PIN");
-
-  if (!apiKey || !secretKey || !clientId || !pin) {
-    throw new Error("Missing Supabase secrets: AngelOne_Apikey, AngelOne_SecretKey, AngelOne_ClientID, AngelOne_PIN");
-  }
-
-  const totp = await generateTotp(secretKey);
-  const jwtToken = await angelLogin(apiKey, clientId, pin, totp);
-  return { apiKey, jwtToken };
-}
 
 // ---------------------------------------------------------------------------
 // Token resolution – uses the Angel One public scrip master (no auth needed)
@@ -320,7 +191,7 @@ Deno.serve(async (req) => {
   let apiKey: string;
   let jwtToken: string;
   try {
-    ({ apiKey, jwtToken } = await authenticate());
+    ({ apiKey, jwtToken } = await authenticateAngelOne());
   } catch (err) {
     return Response.json({ error: err instanceof Error ? err.message : String(err) }, { status: 500 });
   }
