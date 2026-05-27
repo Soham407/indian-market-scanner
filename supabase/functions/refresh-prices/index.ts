@@ -80,7 +80,8 @@ type AngelQuote = {
   low: number;
   close: number;
   ltp: number;
-  volume: number;
+  volume?: number;       // may be absent in FULL mode
+  tradeVolume?: number;  // Angel One FULL mode returns volume here
   avgPrice?: number;
   averagePrice?: number;
 };
@@ -424,7 +425,9 @@ Deno.serve(async (req) => {
       patch.session_date = todayIst;
     }
     if (typeof quote.low === "number" && quote.low > 0) patch.session_low = quote.low;
-    if (typeof quote.volume === "number" && quote.volume > 0) patch.session_volume = quote.volume;
+    // Angel One FULL mode uses tradeVolume; fall back to volume for compatibility
+    const rawVol = quote.tradeVolume ?? quote.volume ?? 0;
+    if (typeof rawVol === "number" && rawVol > 0) patch.session_volume = rawVol;
 
     if (inOrWindow) {
       if (typeof quote.high === "number" && quote.high > 0) {
@@ -481,7 +484,9 @@ Deno.serve(async (req) => {
     const instrumentId = tokenToId.get(quote.symbolToken);
     if (!instrumentId || !quote.ltp || quote.ltp <= 0) continue;
     const ltp = quote.ltp;
-    const vol = typeof quote.volume === "number" && quote.volume >= 0 ? quote.volume : 0;
+    // Angel One FULL mode returns volume as tradeVolume
+    const rawQVol = quote.tradeVolume ?? quote.volume ?? 0;
+    const vol = typeof rawQVol === "number" && rawQVol >= 0 ? rawQVol : 0;
 
     candleRows.push({
       instrument_id: instrumentId,

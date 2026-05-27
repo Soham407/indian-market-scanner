@@ -61,6 +61,19 @@ Deno.serve(async () => {
   const supabase = createServiceClient();
   const now = new Date();
 
+  // Resolve the orb_breakout strategy UUID once (the column is a UUID FK, not a name)
+  const { data: strategyRow } = await supabase
+    .from("bot_strategies")
+    .select("id")
+    .eq("name", "orb_breakout")
+    .eq("status", "active")
+    .single();
+
+  if (!strategyRow?.id) {
+    return Response.json({ error: "orb_breakout strategy not found in bot_strategies", trades_placed: 0 }, { status: 500 });
+  }
+  const strategyUuid = strategyRow.id as string;
+
   // Phase 1: Build opening range during 9:15-9:30
   if (isOrWindow(now)) {
     const { data: instruments } = await supabase
@@ -174,7 +187,7 @@ Deno.serve(async () => {
         const { error: insertError } = await supabase
           .from("bot_paper_trades")
           .insert({
-            strategy_id: "orb_breakout",
+            strategy_id: strategyUuid,
             instrument_id: inst.id,
             side,
             entry_price: actualEntry,
@@ -221,7 +234,7 @@ Deno.serve(async () => {
         const { error: insertError } = await supabase
           .from("bot_paper_trades")
           .insert({
-            strategy_id: "orb_breakout",
+            strategy_id: strategyUuid,
             instrument_id: inst.id,
             side,
             entry_price: actualEntry,
