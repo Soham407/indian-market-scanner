@@ -2,9 +2,11 @@ import { createServiceClient } from "../_shared/supabase.ts";
 import { getMarketSessionStatus } from "../_shared/market-hours.ts";
 import { sendTelegramNotification } from "../_shared/telegram.ts";
 
-const EOD_TIME = 15 * 60 + 15; // 3:15 PM IST in minutes since midnight
-const DAILY_LOSS_CIRCUIT_BREAKER = -3000; // -₹3000 = -3%
-const SESSION_START = 9 * 60 + 15; // 9:15 IST
+const EOD_TIME = 15 * 60 + 15;             // 3:15 PM IST
+const EOD_WINDOW_MINUTES = 20;             // run up to 3:35 PM
+const DAILY_LOSS_CIRCUIT_BREAKER = -3000;  // ₹3,000
+const BROKERAGE_PER_TRADE = 40;            // ₹20 per leg × 2
+const STATUTORY_FEE_PCT = 0.0005;          // 0.05%
 
 function istMinutesSinceMidnight(now = new Date()): number {
   const ist = new Date(now.getTime() + 330 * 60 * 1000);
@@ -12,8 +14,23 @@ function istMinutesSinceMidnight(now = new Date()): number {
 }
 
 function isEodWindow(now = new Date()): boolean {
-  const minutes = istMinutesSinceMidnight(now);
-  return minutes >= EOD_TIME && minutes < EOD_TIME + 15;
+  const m = istMinutesSinceMidnight(now);
+  return m >= EOD_TIME && m < EOD_TIME + EOD_WINDOW_MINUTES;
+}
+
+function istDateStr(now = new Date()): string {
+  return new Date(now.getTime() + 330 * 60 * 1000).toISOString().slice(0, 10);
+}
+
+function fmtRs(n: number): string {
+  const sign = n >= 0 ? "+" : "";
+  return `${sign}₹${Math.abs(n).toFixed(0)}`;
+}
+
+function exitEmoji(reason: string, pnl: number): string {
+  if (reason === "target") return "✅";
+  if (reason === "stop") return "❌";
+  return pnl >= 0 ? "⬜" : "🔻"; // eod flat or small loss
 }
 
 Deno.serve(async () => {
@@ -28,100 +45,191 @@ Deno.serve(async () => {
   }
 
   const supabase = createServiceClient();
-  const todayIst = now.toISOString().slice(0, 10);
+  const todayIst = istDateStr(now);
   let tradesFlattened = 0;
 
-  // Fetch all open trades
+  // -------------------------------------------------------------------------
+  // 1. Fetch all open trades with full detail for flatten + summary
+  // -------------------------------------------------------------------------
   const { data: openTrades, error: tradesError } = await supabase
     .from("bot_paper_trades")
-    .select("id,side,entry_price,shares,stop_loss_price")
+    .select("id,instrument_id,side,entry_price,shares,stop_loss_price,target_price,risk_amount,instruments(symbol,name,last_price)")
     .eq("status", "open");
 
-  if (tradesError || !openTrades) {
-    return Response.json({
-      error: tradesError?.message,
-      trades_flattened: 0,
-    });
+  if (tradesError) {
+    return Response.json({ error: tradesError.message, trades_flattened: 0 });
   }
 
-  // Close all open trades at current market price (use close of last candle as EOD price)
-  for (const trade of openTrades) {
+  // -------------------------------------------------------------------------
+  // 2. Close each open trade at the last known price
+  // -------------------------------------------------------------------------
+  for (const trade of (openTrades ?? [])) {
+    // Try latest 1-min candle; fall back to instruments.last_price
     const { data: candles } = await supabase
       .from("bot_candles")
       .select("close")
-      .eq("instrument_id", trade.id)
+      .eq("instrument_id", trade.instrument_id)   // ← was incorrectly trade.id
       .eq("timeframe", "1m")
       .order("candle_open_at", { ascending: false })
       .limit(1);
 
-    if (!candles || candles.length === 0) continue;
+    const inst = trade.instruments as { symbol: string; name: string; last_price: number | null } | null;
+    const eodPrice: number | null =
+      (candles && candles.length > 0 ? candles[0].close : null)
+      ?? inst?.last_price
+      ?? null;
 
-    const eodPrice = candles[0].close;
+    if (!eodPrice || eodPrice <= 0) continue;
+
     const grossPnl = trade.side === "long"
       ? (eodPrice - trade.entry_price) * trade.shares
       : (trade.entry_price - eodPrice) * trade.shares;
 
-    const statutoryCharges = Math.abs(eodPrice * trade.shares * 0.0005); // 0.05%
-    const brokerage = 40; // ₹20 per leg × 2
-    const netPnl = grossPnl - statutoryCharges - brokerage;
+    const statutoryCharges = Math.abs(eodPrice * trade.shares * STATUTORY_FEE_PCT);
+    const netPnl = grossPnl - statutoryCharges - BROKERAGE_PER_TRADE;
 
     const { error: updateError } = await supabase
       .from("bot_paper_trades")
       .update({
         exit_price: eodPrice,
         exit_time: now.toISOString(),
-        exit_reason: "eod_flatten",
+        exit_reason: "eod",           // ← was "eod_flatten" which violates the check constraint
         status: "closed",
         gross_pnl: grossPnl,
-        brokerage,
+        brokerage: BROKERAGE_PER_TRADE,
         statutory_charges: statutoryCharges,
         net_pnl: netPnl,
       })
       .eq("id", trade.id);
 
-    if (!updateError) {
-      tradesFlattened++;
-    }
+    if (!updateError) tradesFlattened++;
   }
 
-  // Calculate daily P&L and check circuit breaker
+  // -------------------------------------------------------------------------
+  // 3. Fetch all trades closed today (including the ones we just closed)
+  // -------------------------------------------------------------------------
   const { data: closedToday } = await supabase
     .from("bot_paper_trades")
-    .select("net_pnl")
+    .select("side,entry_price,exit_price,shares,gross_pnl,net_pnl,brokerage,statutory_charges,exit_reason,instruments(symbol,name)")
     .gte("exit_time", `${todayIst}T00:00:00Z`)
     .lt("exit_time", `${todayIst}T23:59:59Z`)
-    .eq("status", "closed");
+    .eq("status", "closed")
+    .order("net_pnl", { ascending: false });
 
-  let dailyPnl = 0;
-  if (closedToday) {
-    dailyPnl = closedToday.reduce((sum, t) => sum + (t.net_pnl || 0), 0);
-  }
+  type ClosedTrade = {
+    side: string;
+    entry_price: number;
+    exit_price: number | null;
+    shares: number;
+    gross_pnl: number | null;
+    net_pnl: number | null;
+    brokerage: number | null;
+    statutory_charges: number | null;
+    exit_reason: string | null;
+    instruments: { symbol: string; name: string } | null;
+  };
 
-  // Trigger circuit breaker if daily loss exceeds ₹3000
-  if (dailyPnl <= DAILY_LOSS_CIRCUIT_BREAKER) {
+  const trades = (closedToday ?? []) as ClosedTrade[];
+  const totalGross = trades.reduce((s, t) => s + (t.gross_pnl ?? 0), 0);
+  const totalNet   = trades.reduce((s, t) => s + (t.net_pnl ?? 0), 0);
+  const totalBrok  = trades.reduce((s, t) => s + (t.brokerage ?? 0), 0);
+  const totalStat  = trades.reduce((s, t) => s + (t.statutory_charges ?? 0), 0);
+
+  const wins   = trades.filter((t) => (t.net_pnl ?? 0) > 0).length;
+  const losses = trades.filter((t) => (t.net_pnl ?? 0) < 0).length;
+  const flat   = trades.length - wins - losses;
+  const winRate = trades.length > 0 ? Math.round((wins / trades.length) * 100) : 0;
+
+  // -------------------------------------------------------------------------
+  // 4. Check for any positions still open (shouldn't be, but just in case)
+  // -------------------------------------------------------------------------
+  const { data: stillOpen } = await supabase
+    .from("bot_paper_trades")
+    .select("instruments(symbol),side")
+    .eq("status", "open");
+
+  // -------------------------------------------------------------------------
+  // 5. Circuit breaker check
+  // -------------------------------------------------------------------------
+  if (totalNet <= DAILY_LOSS_CIRCUIT_BREAKER) {
     await supabase
       .from("bot_config")
       .update({ trading_enabled: false, circuit_breaker_triggered_at: now.toISOString() })
-      .eq("id", 1); // Assuming single config row
+      .eq("id", 1);
 
     await sendTelegramNotification({
       type: "circuit_breaker",
       symbol: "BOT",
       timestamp: now.toISOString(),
-      message: `Daily loss ₹${dailyPnl.toFixed(0)} exceeded ₹3,000 limit`,
-    });
-
-    return Response.json({
-      status: "Circuit breaker triggered",
-      trades_flattened: tradesFlattened,
-      daily_pnl: dailyPnl,
-      trading_enabled: false,
+      message: `Daily loss ₹${totalNet.toFixed(0)} exceeded ₹3,000 limit`,
     });
   }
+
+  // -------------------------------------------------------------------------
+  // 6. Build and send EOD summary to Telegram
+  // -------------------------------------------------------------------------
+
+  // Trade log lines
+  const tradeLines = trades.map((t) => {
+    const sym = t.instruments?.symbol ?? "???";
+    const side = t.side === "long" ? "L" : "S";
+    const reason = t.exit_reason ?? "eod";
+    const pnl = t.net_pnl ?? 0;
+    const em = exitEmoji(reason, pnl);
+    return `${em} ${sym} ${side}  ${fmtRs(pnl)}  (${reason})`;
+  }).join("\n");
+
+  const openLines = stillOpen && stillOpen.length > 0
+    ? (stillOpen as { instruments: { symbol: string } | null; side: string }[])
+        .map((t) => `⚠️ ${t.instruments?.symbol ?? "?"} ${t.side}`)
+        .join("\n")
+    : "None — all positions squared off ✅";
+
+  const pnlEmoji = totalNet >= 0 ? "🟢" : "🔴";
+  const tomorrow = totalNet <= DAILY_LOSS_CIRCUIT_BREAKER
+    ? "⛔ Circuit breaker active — trading PAUSED tomorrow"
+    : "✅ Bot resumes at 9:15 AM IST tomorrow";
+
+  const istNow = new Date(now.getTime() + 330 * 60 * 1000)
+    .toLocaleString("en-IN", { timeZone: "Asia/Kolkata" });
+
+  const summaryText = [
+    `📊 EOD Report — ${todayIst}`,
+    ``,
+    `${pnlEmoji} P&amp;L`,
+    `  Gross:      ${fmtRs(totalGross)}`,
+    `  Charges:   -₹${(totalBrok + totalStat).toFixed(0)} (brok + statutory)`,
+    `  Net:        ${fmtRs(totalNet)}`,
+    ``,
+    `🎯 Win Rate: ${wins}W / ${losses}L / ${flat}E  (${winRate}%)`,
+    ``,
+    trades.length > 0 ? `📋 Trades (${trades.length})` : `📋 No trades today`,
+    tradeLines,
+    ``,
+    `🔒 Open at Close`,
+    openLines,
+    ``,
+    `📅 Tomorrow`,
+    tomorrow,
+    ``,
+    `⏰ ${istNow}`,
+  ].filter((l) => l !== undefined).join("\n");
+
+  await sendTelegramNotification({
+    type: "eod_summary",
+    symbol: "EOD",
+    timestamp: now.toISOString(),
+    message: summaryText,
+  });
 
   return Response.json({
     status: "EOD flatten complete",
     trades_flattened: tradesFlattened,
-    daily_pnl: dailyPnl,
+    total_trades_today: trades.length,
+    wins,
+    losses,
+    gross_pnl: totalGross,
+    net_pnl: totalNet,
+    circuit_breaker: totalNet <= DAILY_LOSS_CIRCUIT_BREAKER,
   });
 });

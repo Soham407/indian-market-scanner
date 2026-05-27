@@ -1,5 +1,5 @@
 export interface TelegramMessage {
-  type: 'entry' | 'exit' | 'circuit_breaker' | 'heartbeat' | 'error';
+  type: 'entry' | 'exit' | 'circuit_breaker' | 'heartbeat' | 'error' | 'eod_summary';
   symbol: string;
   side?: 'long' | 'short';
   entryPrice?: number;
@@ -81,6 +81,12 @@ Time: ${new Date(msg.timestamp).toLocaleString('en-IN', { timeZone: 'Asia/Kolkat
 ${msg.message}
 Time: ${new Date(msg.timestamp).toLocaleString('en-IN', { timeZone: 'Asia/Kolkata' })}
       `.trim();
+      break;
+    }
+
+    case 'eod_summary': {
+      // Pre-formatted message passed directly through msg.message
+      text = msg.message ?? '📊 EOD Summary (no data)';
       break;
     }
   }
