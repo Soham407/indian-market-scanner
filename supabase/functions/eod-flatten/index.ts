@@ -22,16 +22,6 @@ function istDateStr(now = new Date()): string {
   return new Date(now.getTime() + 330 * 60 * 1000).toISOString().slice(0, 10);
 }
 
-function fmtRs(n: number): string {
-  const sign = n >= 0 ? "+" : "";
-  return `${sign}₹${Math.abs(n).toFixed(0)}`;
-}
-
-function exitEmoji(reason: string, pnl: number): string {
-  if (reason === "target") return "✅";
-  if (reason === "stop") return "❌";
-  return pnl >= 0 ? "⬜" : "🔻"; // eod flat or small loss
-}
 
 Deno.serve(async () => {
   const session = getMarketSessionStatus();
@@ -165,62 +155,9 @@ Deno.serve(async () => {
     });
   }
 
-  // -------------------------------------------------------------------------
-  // 6. Build and send EOD summary to Telegram
-  // -------------------------------------------------------------------------
-
-  // Trade log lines
-  const tradeLines = trades.map((t) => {
-    const sym = t.instruments?.symbol ?? "???";
-    const side = t.side === "long" ? "L" : "S";
-    const reason = t.exit_reason ?? "eod";
-    const pnl = t.net_pnl ?? 0;
-    const em = exitEmoji(reason, pnl);
-    return `${em} ${sym} ${side}  ${fmtRs(pnl)}  (${reason})`;
-  }).join("\n");
-
-  const openLines = stillOpen && stillOpen.length > 0
-    ? (stillOpen as { instruments: { symbol: string } | null; side: string }[])
-        .map((t) => `⚠️ ${t.instruments?.symbol ?? "?"} ${t.side}`)
-        .join("\n")
-    : "None — all positions squared off ✅";
-
-  const pnlEmoji = totalNet >= 0 ? "🟢" : "🔴";
-  const tomorrow = totalNet <= DAILY_LOSS_CIRCUIT_BREAKER
-    ? "⛔ Circuit breaker active — trading PAUSED tomorrow"
-    : "✅ Bot resumes at 9:15 AM IST tomorrow";
-
-  const istNow = new Date(now.getTime() + 330 * 60 * 1000)
-    .toLocaleString("en-IN", { timeZone: "Asia/Kolkata" });
-
-  const summaryText = [
-    `📊 EOD Report — ${todayIst}`,
-    ``,
-    `${pnlEmoji} P&amp;L`,
-    `  Gross:      ${fmtRs(totalGross)}`,
-    `  Charges:   -₹${(totalBrok + totalStat).toFixed(0)} (brok + statutory)`,
-    `  Net:        ${fmtRs(totalNet)}`,
-    ``,
-    `🎯 Win Rate: ${wins}W / ${losses}L / ${flat}E  (${winRate}%)`,
-    ``,
-    trades.length > 0 ? `📋 Trades (${trades.length})` : `📋 No trades today`,
-    tradeLines,
-    ``,
-    `🔒 Open at Close`,
-    openLines,
-    ``,
-    `📅 Tomorrow`,
-    tomorrow,
-    ``,
-    `⏰ ${istNow}`,
-  ].filter((l) => l !== undefined).join("\n");
-
-  await sendTelegramNotification({
-    type: "eod_summary",
-    symbol: "EOD",
-    timestamp: now.toISOString(),
-    message: summaryText,
-  });
+  // Note: the full EOD Telegram summary is sent by the separate eod-summary
+  // function which runs at 3:30 PM IST (10:00 AM UTC), after all positions
+  // are settled and the market has fully closed.
 
   return Response.json({
     status: "EOD flatten complete",
