@@ -14,11 +14,11 @@ Deno.serve(async () => {
   const supabase = createServiceClient();
   let exitsProcessed = 0;
 
-  // Get all open trades with instrument info
+  // Get all open trades with instrument info (including last_price fallback)
   const { data: openTrades, error: tradesError } = await supabase
     .from("bot_paper_trades")
     .select(
-      "id,instrument_id,side,entry_price,stop_loss_price,target_price,shares,risk_amount,instruments(symbol,name)",
+      "id,instrument_id,side,entry_price,stop_loss_price,target_price,shares,risk_amount,instruments(symbol,name,last_price)",
     )
     .eq("status", "open");
 
@@ -36,11 +36,23 @@ Deno.serve(async () => {
       .order("candle_open_at", { ascending: false })
       .limit(1);
 
-    if (candleError || !candles || candles.length === 0) {
-      continue;
-    }
+    // Fall back to instruments.last_price when no candles are available yet
+    const instrument = trade.instruments as { symbol: string; name: string; last_price: number | null } | null;
+    let candle: { high: number; low: number; close: number; candle_open_at: string };
 
-    const candle = candles[0];
+    if (!candleError && candles && candles.length > 0) {
+      candle = candles[0];
+    } else if (instrument?.last_price && instrument.last_price > 0) {
+      // Synthetic candle: treat LTP as the candle's high, low, and close
+      candle = {
+        high: instrument.last_price,
+        low: instrument.last_price,
+        close: instrument.last_price,
+        candle_open_at: new Date().toISOString(),
+      };
+    } else {
+      continue; // No price data at all — skip
+    }
     let exitPrice: number | null = null;
     let exitReason: string | null = null;
 
@@ -101,7 +113,6 @@ Deno.serve(async () => {
 
       if (!updateError) {
         exitsProcessed++;
-        const instrument = trade.instruments as { symbol: string; name: string } | null;
         await sendTelegramNotification({
           type: "exit",
           symbol: instrument ? `${instrument.symbol} (${instrument.name})` : "UNKNOWN",

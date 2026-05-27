@@ -16,7 +16,7 @@ const NSE_HOLIDAYS = new Set<string>([
   "2026-04-03", // Good Friday
   "2026-04-14", // Dr. Ambedkar Jayanti
   "2026-05-01", // Maharashtra Day
-  "2026-05-27", // Bakri Id (lunar — verify)
+  // "2026-05-27" removed — Bakri Id 2026 is ~Jun 6–7 per Islamic calendar; NSE was open
   "2026-08-17", // Janmashtami
   "2026-10-02", // Gandhi Jayanti
   "2026-10-28", // Diwali — Laxmi Pujan (verify exact date via NSE calendar each year)

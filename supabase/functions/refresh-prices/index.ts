@@ -453,5 +453,62 @@ Deno.serve(async (req) => {
     if (markError) return Response.json({ error: markError.message }, { status: 500 });
   }
 
-  return Response.json({ refreshed: updatedCount, source: "angel_one" });
+  // -------------------------------------------------------------------------
+  // Write 1-minute candles to bot_candles from live quote snapshots.
+  // Each invocation writes one synthetic candle per instrument for the
+  // current minute (floored). Conflicts (same instrument+timeframe+minute)
+  // are ignored so the first snapshot of each minute "wins" as the candle.
+  // -------------------------------------------------------------------------
+
+  // Floor current time to the minute in UTC
+  const nowMs = Date.now();
+  const minuteFloorMs = nowMs - (nowMs % 60000);
+  const candleOpenAt = new Date(minuteFloorMs).toISOString();
+
+  const candleRows: {
+    instrument_id: string;
+    timeframe: string;
+    open: number;
+    high: number;
+    low: number;
+    close: number;
+    volume: number;
+    candle_open_at: string;
+    source: string;
+  }[] = [];
+
+  for (const quote of quotes) {
+    const instrumentId = tokenToId.get(quote.symbolToken);
+    if (!instrumentId || !quote.ltp || quote.ltp <= 0) continue;
+    const ltp = quote.ltp;
+    const vol = typeof quote.volume === "number" && quote.volume >= 0 ? quote.volume : 0;
+
+    candleRows.push({
+      instrument_id: instrumentId,
+      timeframe: "1m",
+      open: ltp,
+      high: ltp,
+      low: ltp,
+      close: ltp,
+      volume: vol,
+      candle_open_at: candleOpenAt,
+      source: "angel_one_snapshot",
+    });
+  }
+
+  let candlesWritten = 0;
+  if (candleRows.length > 0) {
+    // Upsert in one batch; ignore conflicts (first snapshot of the minute wins)
+    const { error: candleErr, count } = await supabase
+      .from("bot_candles")
+      .upsert(candleRows, { onConflict: "instrument_id,timeframe,candle_open_at", ignoreDuplicates: true })
+      .select("id");
+    if (candleErr) {
+      console.error("[refresh-prices] bot_candles upsert error:", candleErr.message);
+    } else {
+      candlesWritten = candleRows.length;
+    }
+  }
+
+  return Response.json({ refreshed: updatedCount, candles_written: candlesWritten, source: "angel_one" });
 });
