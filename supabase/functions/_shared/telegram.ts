@@ -18,8 +18,9 @@ export interface TelegramMessage {
 export async function sendTelegramNotification(
   msg: TelegramMessage,
 ): Promise<{ success: boolean; error?: string }> {
-  const botToken = Deno.env.get('TELEGRAM_BOT_TOKEN');
-  const chatId = Deno.env.get('TELEGRAM_CHAT_ID');
+  // Secrets stored in Supabase vault with lowercase names
+  const botToken = Deno.env.get('telegram_bot_token') ?? Deno.env.get('TELEGRAM_BOT_TOKEN');
+  const chatId = Deno.env.get('telegram_chat_id') ?? Deno.env.get('TELEGRAM_CHAT_ID');
 
   if (!botToken || !chatId) {
     return { success: false, error: 'Telegram credentials not configured' };
