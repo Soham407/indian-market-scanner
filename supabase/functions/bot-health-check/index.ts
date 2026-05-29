@@ -29,6 +29,12 @@ Deno.serve(async () => {
   let staleCandlesDetected = 0;
   let staleInstruments: string[] = [];
 
+  // Parse current IST minutes to determine time elapsed since open (9:15 AM IST)
+  const [istHour, istMinute] = session.istTime.split(":").map(Number);
+  const minutesSinceMidnight = istHour * 60 + istMinute;
+  const marketOpenMinutes = 9 * 60 + 15;
+  const minutesSinceOpen = minutesSinceMidnight - marketOpenMinutes;
+
   // Check for stale candle data
   for (const symbol of NIFTY_50_SYMBOLS) {
     const { data: instrument } = await supabase
@@ -50,15 +56,31 @@ Deno.serve(async () => {
       .single();
 
     if (!latestCandle) {
-      staleInstruments.push(symbol);
-      staleCandlesDetected++;
+      // If we just opened today, don't trigger alert for missing candle immediately
+      if (minutesSinceOpen >= 15) {
+        staleInstruments.push(symbol);
+        staleCandlesDetected++;
+      }
       continue;
     }
 
-    const candleAge = (nowMs - new Date(latestCandle.candle_open_at).getTime()) / 1000 / 60;
-    if (candleAge > STALE_CANDLE_THRESHOLD_MINUTES) {
-      staleInstruments.push(`${symbol} (${Math.floor(candleAge)}m old)`);
-      staleCandlesDetected++;
+    const candleDate = new Date(new Date(latestCandle.candle_open_at).getTime() + 330 * 60 * 1000).toISOString().slice(0, 10);
+    const todayIst = session.istDate;
+
+    if (candleDate === todayIst) {
+      // Candle is from today: check if older than threshold
+      const candleAge = (nowMs - new Date(latestCandle.candle_open_at).getTime()) / 1000 / 60;
+      if (candleAge > STALE_CANDLE_THRESHOLD_MINUTES) {
+        staleInstruments.push(`${symbol} (${Math.floor(candleAge)}m old)`);
+        staleCandlesDetected++;
+      }
+    } else {
+      // Candle is from previous trading day:
+      // Only count as stale if the market has been open for 15+ minutes today
+      if (minutesSinceOpen >= 15) {
+        staleInstruments.push(`${symbol} (no data today, last was ${candleDate})`);
+        staleCandlesDetected++;
+      }
     }
   }
 
@@ -104,31 +126,20 @@ Deno.serve(async () => {
     dailyPnl = closedToday.reduce((sum, t) => sum + (t.net_pnl || 0), 0);
   }
 
-  // Send heartbeat every 15 minutes
-  const lastHeartbeat = config?.last_trading_date; // Using as proxy for last heartbeat date
-  const shouldSendHeartbeat = !lastHeartbeat ||
-    (nowMs - new Date(lastHeartbeat).getTime()) / 1000 / 60 > HEARTBEAT_INTERVAL_MINUTES;
+  // Send heartbeat — the cron fires every 15 min, so just always send when market is open.
+  // (Avoids the DATE-column vs TIMESTAMPTZ comparison bug with last_trading_date.)
+  const status = circuitBreakerActive
+    ? "⛔ Circuit breaker active"
+    : tradingEnabled
+      ? `✅ Trading active (${openTradesCount} open)`
+      : "🛑 Trading disabled";
 
-  if (shouldSendHeartbeat) {
-    const status = circuitBreakerActive
-      ? "⛔ Circuit breaker active"
-      : tradingEnabled
-        ? `✅ Trading active (${openTradesCount} open)`
-        : "🛑 Trading disabled";
-
-    await sendTelegramNotification({
-      type: "heartbeat",
-      symbol: "BOT",
-      timestamp: now.toISOString(),
-      message: `${status} | Daily P&L: ₹${dailyPnl.toFixed(0)}`,
-    });
-
-    // Update last heartbeat time
-    await supabase
-      .from("bot_config")
-      .update({ last_trading_date: now.toISOString() })
-      .eq("id", 1);
-  }
+  await sendTelegramNotification({
+    type: "heartbeat",
+    symbol: "BOT",
+    timestamp: now.toISOString(),
+    message: `${status} | Daily P&L: ₹${dailyPnl.toFixed(0)}`,
+  });
 
   return Response.json({
     status: "Health check complete",
