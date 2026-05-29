@@ -22,3 +22,6 @@
 # Supabase local/link state
 supabase/.branches/
 supabase/.temp/
+NSE_Historical_Data_2015_2022/
+.claude/
+.sandcastle/worktrees/

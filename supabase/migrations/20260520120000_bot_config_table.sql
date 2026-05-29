@@ -17,7 +17,3 @@ ALTER TABLE bot_config ENABLE ROW LEVEL SECURITY;
 CREATE POLICY "Allow service role full access" ON bot_config
   USING (true)
   WITH CHECK (true);
-
--- Add trading_enabled column to bot_paper_trades if not exists (for historical tracking)
-ALTER TABLE bot_paper_trades
-ADD COLUMN IF NOT EXISTS trading_enabled_at_entry BOOLEAN DEFAULT true;

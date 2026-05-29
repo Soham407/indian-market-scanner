@@ -18,11 +18,7 @@ RUN curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg \
   && apt-get update && apt-get install -y gh \
   && rm -rf /var/lib/apt/lists/*
 
-# Supabase CLI (agents may need to run migrations / deploy functions)
-RUN curl -fsSL https://github.com/supabase/cli/releases/latest/download/supabase_linux_amd64.deb \
-  -o /tmp/supabase.deb \
-  && dpkg -i /tmp/supabase.deb \
-  && rm /tmp/supabase.deb
+# Supabase CLI (optional; agents generate migrations, they don't execute them)
 
 # pnpm (the bot/ workspace uses pnpm per AGENTS.md)
 RUN npm install -g pnpm@9
