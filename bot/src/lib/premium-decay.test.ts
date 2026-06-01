@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  buildPremiumDecayAreaPath,
   buildReadableTimeTickIndices,
   buildLinearPremiumDecayPath,
   buildOneMinutePremiumDecaySeries,
@@ -126,6 +127,21 @@ describe("one-minute premium decay series", () => {
     );
 
     expect(path).toBe("M 0.00,100.00 L 10.00,103.90 L 20.00,101.20");
+  });
+
+  it("closes an area along the zero baseline without a diagonal wedge", () => {
+    const path = buildPremiumDecayAreaPath(
+      [
+        { ceDecay: 10, chartPeDecay: -5 },
+        { ceDecay: 20, chartPeDecay: -10 },
+        { ceDecay: 30, chartPeDecay: -15 },
+      ],
+      "ceDecay",
+      (index) => index * 10,
+      (value) => 100 - value,
+    );
+
+    expect(path).toBe("M 0.00,90.00 L 10.00,80.00 L 20.00,70.00 L 20.00,100.00 L 0.00,100.00 Z");
   });
 });
 

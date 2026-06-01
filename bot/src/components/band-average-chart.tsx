@@ -4,6 +4,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { getBrowserSupabaseClient } from "@/lib/supabase-browser";
 import {
   buildBandAveragedSeries,
+  buildPremiumDecayAreaPath,
   buildDemoPremiumDecayRows,
   buildLinearPremiumDecayPath,
   buildReadableTimeTickIndices,
@@ -63,11 +64,12 @@ function linePath(slots: PremiumDecayMinutePoint[], m: ChartMetrics, key: "ceDec
 }
 
 function areaPath(slots: PremiumDecayMinutePoint[], m: ChartMetrics, key: "ceDecay" | "chartPeDecay"): string {
-  if (slots.length === 0) return "";
-  const baseY = sy(0, m);
-  const first = sx(0, slots.length, m);
-  const last = sx(slots.length - 1, slots.length, m);
-  return `M ${first.toFixed(2)},${baseY.toFixed(2)} ${linePath(slots, m, key)} L ${last.toFixed(2)},${baseY.toFixed(2)} Z`;
+  return buildPremiumDecayAreaPath(
+    slots,
+    key,
+    (index) => sx(index, slots.length, m),
+    (value) => sy(value, m),
+  );
 }
 
 function demoBandSlots(): PremiumDecayMinutePoint[] {

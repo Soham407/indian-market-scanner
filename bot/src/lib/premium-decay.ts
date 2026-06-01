@@ -117,6 +117,20 @@ export function buildLinearPremiumDecayPath(
   }).join(" ");
 }
 
+export function buildPremiumDecayAreaPath(
+  points: Pick<PremiumDecayPoint, "ceDecay" | "chartPeDecay">[],
+  key: "ceDecay" | "chartPeDecay",
+  scaleX: (index: number) => number,
+  scaleY: (value: number) => number,
+): string {
+  if (points.length === 0) return "";
+
+  const firstX = scaleX(0);
+  const lastX = scaleX(points.length - 1);
+  const baselineY = scaleY(0);
+  return `${buildLinearPremiumDecayPath(points, key, scaleX, scaleY)} L ${lastX.toFixed(2)},${baselineY.toFixed(2)} L ${firstX.toFixed(2)},${baselineY.toFixed(2)} Z`;
+}
+
 export function buildReadableTimeTickIndices(
   totalSlots: number,
   chartWidth: number,
