@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
+import { PremiumDecayChart } from "@/components/premium-decay-chart";
 import { getHeartbeatStatus } from "@/lib/heartbeat";
 import { getBrowserSupabaseClient } from "@/lib/supabase-browser";
 
@@ -60,14 +61,32 @@ export default function HomePage() {
   }, []);
 
   return (
-    <main className="mx-auto flex min-h-screen w-full max-w-4xl items-center justify-center p-6">
-      <div
-        className={`w-full rounded-2xl border p-8 shadow-sm ${status.isAlive ? "border-emerald-300 bg-emerald-50" : "border-red-300 bg-red-50"}`}
-      >
-        <p className="text-2xl font-semibold tracking-tight text-gray-900">
-          Bot status: <span className={status.isAlive ? "text-emerald-700" : "text-red-700"}>{status.label}</span>{" "}
-          (last heartbeat: {status.message})
-        </p>
+    <main className="min-h-screen bg-[radial-gradient(circle_at_top_left,_rgba(16,185,129,0.12),_transparent_35%),linear-gradient(180deg,_#f8fafc_0%,_#eef2ff_100%)] text-slate-900">
+      <div className="mx-auto flex w-full max-w-7xl flex-col gap-6 px-4 py-6 sm:px-6 lg:px-8">
+        <header className="flex flex-col gap-3 rounded-[2rem] border border-white/60 bg-white/70 px-6 py-5 shadow-[0_20px_60px_-35px_rgba(15,23,42,0.5)] backdrop-blur sm:flex-row sm:items-center sm:justify-between">
+          <div>
+            <p className="text-xs font-semibold uppercase tracking-[0.3em] text-slate-500">Indian Market Scanner</p>
+            <h1 className="mt-2 text-3xl font-semibold tracking-tight text-slate-950">Premium decay control room</h1>
+            <p className="mt-2 max-w-2xl text-sm leading-6 text-slate-600">
+              Live CE/PE decay streamed from Supabase and rendered as a mirrored intraday area chart for options monitoring.
+            </p>
+          </div>
+          <div
+            className={`rounded-2xl border px-4 py-3 shadow-sm ${status.isAlive ? "border-emerald-200 bg-emerald-50" : "border-rose-200 bg-rose-50"}`}
+          >
+            <p className="text-xs font-semibold uppercase tracking-[0.25em] text-slate-500">Bot heartbeat</p>
+            <p className="mt-1 text-lg font-semibold text-slate-950">
+              <span className={status.isAlive ? "text-emerald-700" : "text-rose-700"}>{status.label}</span>
+            </p>
+            <p className="text-sm text-slate-600">Last update: {status.message}</p>
+          </div>
+        </header>
+
+        <PremiumDecayChart
+          seriesKey="NIFTY-ATM-WEEKLY"
+          title="NIFTY premium decay"
+          subtitle="Signed CE and PE premium movement from the session baseline, streamed live from Supabase."
+        />
       </div>
     </main>
   );
