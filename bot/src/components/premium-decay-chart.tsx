@@ -13,6 +13,7 @@ import {
   type PremiumDecayPoint,
   type PremiumDecayRow,
 } from "@/lib/premium-decay";
+import { getPremiumDecayPlotClipRect } from "@/lib/options-chart-ui";
 
 type PremiumDecayChartProps = {
   seriesKey: string;
@@ -199,6 +200,7 @@ export function PremiumDecayChart({
     [minuteSlots.length],
   );
   const zeroY = scaleY(0, metrics);
+  const plotClipRect = getPremiumDecayPlotClipRect();
   const ceArea = buildAreaPath(minuteSlots, metrics, "ceDecay");
   const peArea = buildAreaPath(minuteSlots, metrics, "chartPeDecay");
   const ceLine = buildLinePath(minuteSlots, metrics, "ceDecay");
@@ -297,6 +299,9 @@ export function PremiumDecayChart({
                 <stop offset="0%" stopColor="#ef4444" stopOpacity="0.7" />
                 <stop offset="100%" stopColor="#8b5cf6" stopOpacity="0.15" />
               </linearGradient>
+              <clipPath id="premium-decay-plot-clip">
+                <rect {...plotClipRect} />
+              </clipPath>
             </defs>
 
             {yTicks.map((tick) => {
@@ -313,10 +318,12 @@ export function PremiumDecayChart({
 
             <line x1={MARGIN.left} x2={SVG_WIDTH - MARGIN.right} y1={zeroY} y2={zeroY} stroke="#0f172a" strokeWidth="1.5" />
 
-            <path d={ceArea} fill="url(#ce-gradient)" />
-            <path d={peArea} fill="url(#pe-gradient)" />
-            <path d={ceLine} fill="none" stroke="#10b981" strokeWidth="1.25" />
-            <path d={peLine} fill="none" stroke="#ef4444" strokeWidth="1.25" />
+            <g clipPath="url(#premium-decay-plot-clip)">
+              <path d={ceArea} fill="url(#ce-gradient)" />
+              <path d={peArea} fill="url(#pe-gradient)" />
+              <path d={ceLine} fill="none" stroke="#10b981" strokeWidth="1.25" />
+              <path d={peLine} fill="none" stroke="#ef4444" strokeWidth="1.25" />
+            </g>
 
             {minuteSlots.map((slot, index) => {
               const x = scaleX(index, minuteSlots.length, metrics);

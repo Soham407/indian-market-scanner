@@ -4,6 +4,11 @@ import { useEffect, useMemo, useState } from "react";
 import { BandAverageChart } from "@/components/band-average-chart";
 import { PremiumDecayChart } from "@/components/premium-decay-chart";
 import { getHeartbeatStatus } from "@/lib/heartbeat";
+import {
+  DEFAULT_OPTIONS_CHART_MODE,
+  getOptionsChartVisibility,
+  type OptionsChartMode,
+} from "@/lib/options-chart-ui";
 import { getBrowserSupabaseClient } from "@/lib/supabase-browser";
 
 type BotSettingsRow = {
@@ -13,8 +18,10 @@ type BotSettingsRow = {
 export default function HomePage() {
   const [lastHeartbeatAt, setLastHeartbeatAt] = useState<string | null>(null);
   const [now, setNow] = useState(() => new Date());
+  const [chartMode, setChartMode] = useState<OptionsChartMode>(DEFAULT_OPTIONS_CHART_MODE);
 
   const status = useMemo(() => getHeartbeatStatus(lastHeartbeatAt, now), [lastHeartbeatAt, now]);
+  const chartVisibility = getOptionsChartVisibility(chartMode);
 
   useEffect(() => {
     const interval = setInterval(() => setNow(new Date()), 1000);
@@ -83,13 +90,38 @@ export default function HomePage() {
           </div>
         </header>
 
-        <div className="grid grid-cols-1 gap-6 lg:grid-cols-2">
-          <PremiumDecayChart
-            seriesKey="NIFTY-ATM-WEEKLY"
-            title="NIFTY premium decay"
-            subtitle="Signed CE and PE premium movement from the session baseline, streamed live from Supabase."
-          />
-          <BandAverageChart />
+        <div className="flex flex-wrap gap-2 rounded-2xl border border-white/60 bg-white/70 p-2 shadow-sm backdrop-blur">
+          <button
+            type="button"
+            aria-pressed={chartMode === "atm"}
+            onClick={() => setChartMode("atm")}
+            className={`rounded-xl px-4 py-2 text-sm font-semibold transition ${
+              chartMode === "atm" ? "bg-slate-950 text-white shadow-sm" : "text-slate-600 hover:bg-white hover:text-slate-950"
+            }`}
+          >
+            ATM premium decay
+          </button>
+          <button
+            type="button"
+            aria-pressed={chartMode === "band-average"}
+            onClick={() => setChartMode("band-average")}
+            className={`rounded-xl px-4 py-2 text-sm font-semibold transition ${
+              chartMode === "band-average" ? "bg-slate-950 text-white shadow-sm" : "text-slate-600 hover:bg-white hover:text-slate-950"
+            }`}
+          >
+            Band average
+          </button>
+        </div>
+
+        <div>
+          {chartVisibility.showAtm ? (
+            <PremiumDecayChart
+              seriesKey="NIFTY-ATM-WEEKLY"
+              title="NIFTY premium decay"
+              subtitle="Signed CE and PE premium movement from the session baseline, streamed live from Supabase."
+            />
+          ) : null}
+          {chartVisibility.showBandAverage ? <BandAverageChart /> : null}
         </div>
       </div>
     </main>
