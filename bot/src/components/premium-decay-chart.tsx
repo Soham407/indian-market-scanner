@@ -294,8 +294,8 @@ export function PremiumDecayChart({
 
             <path d={ceArea} fill="url(#ce-gradient)" />
             <path d={peArea} fill="url(#pe-gradient)" />
-            <path d={ceLine} fill="none" stroke="#10b981" strokeWidth="2.75" />
-            <path d={peLine} fill="none" stroke="#ef4444" strokeWidth="2.75" />
+            <path d={ceLine} fill="none" stroke="#10b981" strokeWidth="1.25" />
+            <path d={peLine} fill="none" stroke="#ef4444" strokeWidth="1.25" />
 
             {minuteSlots.map((slot, index) => {
               const x = scaleX(index, minuteSlots.length, metrics);
