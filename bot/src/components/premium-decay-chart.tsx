@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { getBrowserSupabaseClient } from "@/lib/supabase-browser";
 import {
   buildReadableTimeTickIndices,
@@ -109,6 +109,8 @@ export function PremiumDecayChart({
   const [rows, setRows] = useState<PremiumDecayRow[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [hoverIndex, setHoverIndex] = useState<number | null>(null);
+  const svgRef = useRef<SVGSVGElement>(null);
 
   useEffect(() => {
     let isActive = true;
@@ -210,6 +212,19 @@ export function PremiumDecayChart({
     return ticks;
   }, [metrics.maxY, metrics.minY]);
 
+  const handleMouseMove = useCallback(
+    (e: React.MouseEvent<SVGSVGElement>) => {
+      if (minuteSlots.length === 0) return;
+      const rect = e.currentTarget.getBoundingClientRect();
+      const svgX = ((e.clientX - rect.left) / rect.width) * SVG_WIDTH;
+      const rawIndex = ((svgX - MARGIN.left) / (SVG_WIDTH - MARGIN.left - MARGIN.right)) * (minuteSlots.length - 1);
+      setHoverIndex(Math.max(0, Math.min(minuteSlots.length - 1, Math.round(rawIndex))));
+    },
+    [minuteSlots.length],
+  );
+
+  const handleMouseLeave = useCallback(() => setHoverIndex(null), []);
+
   return (
     <section className="overflow-hidden rounded-[1.5rem] border border-slate-200 bg-white/85 shadow-[0_30px_80px_-40px_rgba(15,23,42,0.45)] backdrop-blur">
       <div className="border-b border-slate-200 px-6 py-5 sm:px-8">
@@ -266,7 +281,13 @@ export function PremiumDecayChart({
         ) : null}
 
         <div className="mt-4 overflow-hidden rounded-[1rem] border border-slate-100 bg-gradient-to-b from-slate-50 to-white">
-          <svg viewBox={`0 0 ${SVG_WIDTH} ${SVG_HEIGHT}`} className="block h-auto w-full">
+          <svg
+            ref={svgRef}
+            viewBox={`0 0 ${SVG_WIDTH} ${SVG_HEIGHT}`}
+            className="block h-auto w-full cursor-crosshair"
+            onMouseMove={handleMouseMove}
+            onMouseLeave={handleMouseLeave}
+          >
             <defs>
               <linearGradient id="ce-gradient" x1="0" x2="0" y1="0" y2="1">
                 <stop offset="0%" stopColor="#10b981" stopOpacity="0.8" />
@@ -325,6 +346,43 @@ export function PremiumDecayChart({
             <text x={16} y={MARGIN.top + 40} fill="#ef4444" fontSize="13" fontWeight="600">
               PE
             </text>
+
+            {hoverIndex !== null && minuteSlots[hoverIndex] ? (() => {
+              const slot = minuteSlots[hoverIndex];
+              const x = scaleX(hoverIndex, minuteSlots.length, metrics);
+              const ceY = scaleY(slot.ceDecay, metrics);
+              const peY = scaleY(slot.chartPeDecay, metrics);
+              const timeLabel = formatPremiumDecayTime(slot.sampledAt);
+              const ceLabel = `${slot.ceDecay >= 0 ? "+" : ""}${slot.ceDecay.toFixed(1)}`;
+              const peLabel = `${slot.peDecay >= 0 ? "+" : ""}${slot.peDecay.toFixed(1)}`;
+
+              const TOOLTIP_W = 140;
+              const TOOLTIP_H = 80;
+              const tooltipX = x > metrics.left + metrics.width * 0.65 ? x - TOOLTIP_W - 14 : x + 14;
+              const tooltipY = MARGIN.top + 6;
+
+              return (
+                <g style={{ pointerEvents: "none" }}>
+                  <line
+                    x1={x} x2={x}
+                    y1={MARGIN.top} y2={SVG_HEIGHT - MARGIN.bottom}
+                    stroke="#475569" strokeWidth="1" strokeDasharray="4 4"
+                  />
+                  <circle cx={x} cy={ceY} r="5" fill="#10b981" stroke="white" strokeWidth="2" />
+                  <circle cx={x} cy={peY} r="5" fill="#ef4444" stroke="white" strokeWidth="2" />
+
+                  <rect x={tooltipX} y={tooltipY} width={TOOLTIP_W} height={TOOLTIP_H} rx="7" ry="7" fill="#0f172a" opacity="0.93" />
+                  <text x={tooltipX + 12} y={tooltipY + 18} fill="#94a3b8" fontSize="11" fontWeight="500">{timeLabel}</text>
+                  <line x1={tooltipX + 6} x2={tooltipX + TOOLTIP_W - 6} y1={tooltipY + 24} y2={tooltipY + 24} stroke="#1e293b" strokeWidth="1" />
+                  <circle cx={tooltipX + 15} cy={tooltipY + 38} r="4" fill="#10b981" />
+                  <text x={tooltipX + 26} y={tooltipY + 43} fill="#6ee7b7" fontSize="11">CE</text>
+                  <text x={tooltipX + TOOLTIP_W - 12} y={tooltipY + 43} fill="#10b981" fontSize="12" fontWeight="700" textAnchor="end">{ceLabel}</text>
+                  <circle cx={tooltipX + 15} cy={tooltipY + 60} r="4" fill="#ef4444" />
+                  <text x={tooltipX + 26} y={tooltipY + 65} fill="#fca5a5" fontSize="11">PE</text>
+                  <text x={tooltipX + TOOLTIP_W - 12} y={tooltipY + 65} fill="#ef4444" fontSize="12" fontWeight="700" textAnchor="end">{peLabel}</text>
+                </g>
+              );
+            })() : null}
           </svg>
         </div>
       </div>
