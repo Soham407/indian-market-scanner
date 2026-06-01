@@ -12,10 +12,14 @@ import {
   type PremiumDecayMinutePoint,
   type PremiumDecayRow,
 } from "@/lib/premium-decay";
-import { getPremiumDecayPlotClipRect } from "@/lib/options-chart-ui";
+import {
+  NSE_BAND_ROW_LIMIT,
+  getPremiumDecayPlotClipRect,
+  getPremiumDecaySvgWidth,
+} from "@/lib/options-chart-ui";
 
 const BAND_SERIES_KEY = "NIFTY-BAND-WEEKLY";
-const SVG_WIDTH = 1000;
+const BASE_SVG_WIDTH = 1000;
 const SVG_HEIGHT = 420;
 const MARGIN = { top: 28, right: 28, bottom: 56, left: 68 };
 
@@ -28,7 +32,7 @@ type ChartMetrics = {
   height: number;
 };
 
-function buildMetrics(slots: PremiumDecayMinutePoint[]): ChartMetrics {
+function buildMetrics(slots: PremiumDecayMinutePoint[], svgWidth: number): ChartMetrics {
   const values = slots.flatMap((s) => [s.ceDecay, s.chartPeDecay, 0]);
   const rawMin = Math.min(...values);
   const rawMax = Math.max(...values);
@@ -38,7 +42,7 @@ function buildMetrics(slots: PremiumDecayMinutePoint[]): ChartMetrics {
     maxY: rawMax + padding,
     left: MARGIN.left,
     top: MARGIN.top,
-    width: SVG_WIDTH - MARGIN.left - MARGIN.right,
+    width: svgWidth - MARGIN.left - MARGIN.right,
     height: SVG_HEIGHT - MARGIN.top - MARGIN.bottom,
   };
 }
@@ -93,6 +97,7 @@ export function BandAverageChart() {
   const [error, setError] = useState<string | null>(null);
   const [hoverIndex, setHoverIndex] = useState<number | null>(null);
   const svgRef = useRef<SVGSVGElement>(null);
+  const scrollRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     let isActive = true;
@@ -106,7 +111,7 @@ export function BandAverageChart() {
         .select("id, series_key, instrument_symbol, expiry_date, strike, sampled_at, underlying_ltp, ce_decay, pe_decay")
         .eq("series_key", BAND_SERIES_KEY)
         .order("sampled_at", { ascending: false })
-        .limit(1320); // 11 strikes × 120 minutes
+        .limit(NSE_BAND_ROW_LIMIT);
 
       if (!isActive) return;
       if (qErr) { setError(qErr.message); setRows([]); }
@@ -125,7 +130,7 @@ export function BandAverageChart() {
           setRows((cur) => {
             const merged = [...cur.filter((r) => r.id !== next.id), next];
             merged.sort((a, b) => new Date(a.sampled_at).getTime() - new Date(b.sampled_at).getTime());
-            return merged.slice(-1320);
+            return merged.slice(-NSE_BAND_ROW_LIMIT);
           });
           setError(null);
         })
@@ -147,17 +152,18 @@ export function BandAverageChart() {
 
   const isDemo = rows.length === 0;
   const latest = slots.at(-1);
-  const metrics = useMemo(() => buildMetrics(slots), [slots]);
+  const svgWidth = getPremiumDecaySvgWidth(slots.length);
+  const metrics = useMemo(() => buildMetrics(slots, svgWidth), [slots, svgWidth]);
   const zeroY = sy(0, metrics);
-  const plotClipRect = getPremiumDecayPlotClipRect();
+  const plotClipRect = getPremiumDecayPlotClipRect(svgWidth);
   const ceArea = useMemo(() => areaPath(slots, metrics, "ceDecay"), [slots, metrics]);
   const peArea = useMemo(() => areaPath(slots, metrics, "chartPeDecay"), [slots, metrics]);
   const ceLine = useMemo(() => linePath(slots, metrics, "ceDecay"), [slots, metrics]);
   const peLine = useMemo(() => linePath(slots, metrics, "chartPeDecay"), [slots, metrics]);
 
   const timeTickIndices = useMemo(
-    () => new Set(buildReadableTimeTickIndices(slots.length, SVG_WIDTH - MARGIN.left - MARGIN.right)),
-    [slots.length],
+    () => new Set(buildReadableTimeTickIndices(slots.length, svgWidth - MARGIN.left - MARGIN.right)),
+    [slots.length, svgWidth],
   );
 
   const yTicks = useMemo(() => {
@@ -165,15 +171,20 @@ export function BandAverageChart() {
     return Array.from({ length: count }, (_, i) => metrics.maxY - (i / (count - 1)) * (metrics.maxY - metrics.minY));
   }, [metrics.maxY, metrics.minY]);
 
+  useEffect(() => {
+    const scroller = scrollRef.current;
+    if (scroller) scroller.scrollLeft = scroller.scrollWidth;
+  }, [svgWidth]);
+
   const handleMouseMove = useCallback(
     (e: React.MouseEvent<SVGSVGElement>) => {
       if (slots.length === 0) return;
       const rect = e.currentTarget.getBoundingClientRect();
-      const svgX = ((e.clientX - rect.left) / rect.width) * SVG_WIDTH;
-      const raw = ((svgX - MARGIN.left) / (SVG_WIDTH - MARGIN.left - MARGIN.right)) * (slots.length - 1);
+      const svgX = ((e.clientX - rect.left) / rect.width) * svgWidth;
+      const raw = ((svgX - MARGIN.left) / (svgWidth - MARGIN.left - MARGIN.right)) * (slots.length - 1);
       setHoverIndex(Math.max(0, Math.min(slots.length - 1, Math.round(raw))));
     },
-    [slots.length],
+    [slots.length, svgWidth],
   );
 
   const handleMouseLeave = useCallback(() => setHoverIndex(null), []);
@@ -235,11 +246,12 @@ export function BandAverageChart() {
           </div>
         ) : null}
 
-        <div className="mt-4 overflow-hidden rounded-[1rem] border border-slate-100 bg-gradient-to-b from-slate-50 to-white">
+        <div ref={scrollRef} className="mt-4 overflow-x-auto rounded-[1rem] border border-slate-100 bg-gradient-to-b from-slate-50 to-white">
           <svg
             ref={svgRef}
-            viewBox={`0 0 ${SVG_WIDTH} ${SVG_HEIGHT}`}
-            className="block h-auto w-full cursor-crosshair"
+            viewBox={`0 0 ${svgWidth} ${SVG_HEIGHT}`}
+            className="block h-auto max-w-none cursor-crosshair"
+            style={{ width: `${svgWidth}px`, minWidth: `${BASE_SVG_WIDTH}px` }}
             onMouseMove={handleMouseMove}
             onMouseLeave={handleMouseLeave}
           >
@@ -261,7 +273,7 @@ export function BandAverageChart() {
               const y = sy(tick, metrics);
               return (
                 <g key={`y-${tick}`}>
-                  <line x1={MARGIN.left} x2={SVG_WIDTH - MARGIN.right} y1={y} y2={y} stroke="#e2e8f0" strokeDasharray="6 8" />
+                  <line x1={MARGIN.left} x2={svgWidth - MARGIN.right} y1={y} y2={y} stroke="#e2e8f0" strokeDasharray="6 8" />
                   <text x={MARGIN.left - 12} y={y + 4} fill="#64748b" fontSize="12" textAnchor="end">
                     {Math.round(tick).toLocaleString("en-IN")}
                   </text>
@@ -269,7 +281,7 @@ export function BandAverageChart() {
               );
             })}
 
-            <line x1={MARGIN.left} x2={SVG_WIDTH - MARGIN.right} y1={zeroY} y2={zeroY} stroke="#0f172a" strokeWidth="1.5" />
+            <line x1={MARGIN.left} x2={svgWidth - MARGIN.right} y1={zeroY} y2={zeroY} stroke="#0f172a" strokeWidth="1.5" />
 
             <g clipPath="url(#band-average-plot-clip)">
               <path d={ceArea} fill="url(#band-ce-gradient)" />

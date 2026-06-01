@@ -14,7 +14,11 @@ import {
   type PremiumDecayPoint,
   type PremiumDecayRow,
 } from "@/lib/premium-decay";
-import { getPremiumDecayPlotClipRect } from "@/lib/options-chart-ui";
+import {
+  NSE_SESSION_MINUTE_COUNT,
+  getPremiumDecayPlotClipRect,
+  getPremiumDecaySvgWidth,
+} from "@/lib/options-chart-ui";
 
 type PremiumDecayChartProps = {
   seriesKey: string;
@@ -33,11 +37,11 @@ type ChartMetrics = {
   height: number;
 };
 
-const SVG_WIDTH = 1000;
+const BASE_SVG_WIDTH = 1000;
 const SVG_HEIGHT = 420;
 const MARGIN = { top: 28, right: 28, bottom: 56, left: 68 };
 
-function buildChartMetrics(points: PremiumDecayPoint[]): ChartMetrics {
+function buildChartMetrics(points: PremiumDecayPoint[], svgWidth: number): ChartMetrics {
   const values = points.flatMap((point) => [point.ceDecay, point.chartPeDecay, 0]);
   const rawMin = Math.min(...values);
   const rawMax = Math.max(...values);
@@ -51,7 +55,7 @@ function buildChartMetrics(points: PremiumDecayPoint[]): ChartMetrics {
     zeroY: 0,
     left: MARGIN.left,
     top: MARGIN.top,
-    width: SVG_WIDTH - MARGIN.left - MARGIN.right,
+    width: svgWidth - MARGIN.left - MARGIN.right,
     height: SVG_HEIGHT - MARGIN.top - MARGIN.bottom,
   };
 }
@@ -106,13 +110,14 @@ export function PremiumDecayChart({
   seriesKey,
   title = "Premium Decay",
   subtitle = "Live CE and PE decay streamed from Supabase",
-  maxPoints = 120,
+  maxPoints = NSE_SESSION_MINUTE_COUNT,
 }: PremiumDecayChartProps) {
   const [rows, setRows] = useState<PremiumDecayRow[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [hoverIndex, setHoverIndex] = useState<number | null>(null);
   const svgRef = useRef<SVGSVGElement>(null);
+  const scrollRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     let isActive = true;
@@ -194,14 +199,15 @@ export function PremiumDecayChart({
   }, [rows, seriesKey]);
 
   const latest = points.at(-1);
-  const metrics = useMemo(() => buildChartMetrics(points), [points]);
   const minuteSlots = useMemo(() => buildOneMinutePremiumDecaySeries(points), [points]);
+  const svgWidth = getPremiumDecaySvgWidth(minuteSlots.length);
+  const metrics = useMemo(() => buildChartMetrics(points, svgWidth), [points, svgWidth]);
   const timeTickIndices = useMemo(
-    () => new Set(buildReadableTimeTickIndices(minuteSlots.length, SVG_WIDTH - MARGIN.left - MARGIN.right)),
-    [minuteSlots.length],
+    () => new Set(buildReadableTimeTickIndices(minuteSlots.length, svgWidth - MARGIN.left - MARGIN.right)),
+    [minuteSlots.length, svgWidth],
   );
   const zeroY = scaleY(0, metrics);
-  const plotClipRect = getPremiumDecayPlotClipRect();
+  const plotClipRect = getPremiumDecayPlotClipRect(svgWidth);
   const ceArea = buildAreaPath(minuteSlots, metrics, "ceDecay");
   const peArea = buildAreaPath(minuteSlots, metrics, "chartPeDecay");
   const ceLine = buildLinePath(minuteSlots, metrics, "ceDecay");
@@ -215,15 +221,20 @@ export function PremiumDecayChart({
     return ticks;
   }, [metrics.maxY, metrics.minY]);
 
+  useEffect(() => {
+    const scroller = scrollRef.current;
+    if (scroller) scroller.scrollLeft = scroller.scrollWidth;
+  }, [svgWidth]);
+
   const handleMouseMove = useCallback(
     (e: React.MouseEvent<SVGSVGElement>) => {
       if (minuteSlots.length === 0) return;
       const rect = e.currentTarget.getBoundingClientRect();
-      const svgX = ((e.clientX - rect.left) / rect.width) * SVG_WIDTH;
-      const rawIndex = ((svgX - MARGIN.left) / (SVG_WIDTH - MARGIN.left - MARGIN.right)) * (minuteSlots.length - 1);
+      const svgX = ((e.clientX - rect.left) / rect.width) * svgWidth;
+      const rawIndex = ((svgX - MARGIN.left) / (svgWidth - MARGIN.left - MARGIN.right)) * (minuteSlots.length - 1);
       setHoverIndex(Math.max(0, Math.min(minuteSlots.length - 1, Math.round(rawIndex))));
     },
-    [minuteSlots.length],
+    [minuteSlots.length, svgWidth],
   );
 
   const handleMouseLeave = useCallback(() => setHoverIndex(null), []);
@@ -283,11 +294,12 @@ export function PremiumDecayChart({
           </div>
         ) : null}
 
-        <div className="mt-4 overflow-hidden rounded-[1rem] border border-slate-100 bg-gradient-to-b from-slate-50 to-white">
+        <div ref={scrollRef} className="mt-4 overflow-x-auto rounded-[1rem] border border-slate-100 bg-gradient-to-b from-slate-50 to-white">
           <svg
             ref={svgRef}
-            viewBox={`0 0 ${SVG_WIDTH} ${SVG_HEIGHT}`}
-            className="block h-auto w-full cursor-crosshair"
+            viewBox={`0 0 ${svgWidth} ${SVG_HEIGHT}`}
+            className="block h-auto max-w-none cursor-crosshair"
+            style={{ width: `${svgWidth}px`, minWidth: `${BASE_SVG_WIDTH}px` }}
             onMouseMove={handleMouseMove}
             onMouseLeave={handleMouseLeave}
           >
@@ -309,7 +321,7 @@ export function PremiumDecayChart({
               const y = scaleY(tick, metrics);
               return (
                 <g key={`y-${tick}`}>
-                  <line x1={MARGIN.left} x2={SVG_WIDTH - MARGIN.right} y1={y} y2={y} stroke="#e2e8f0" strokeDasharray="6 8" />
+                  <line x1={MARGIN.left} x2={svgWidth - MARGIN.right} y1={y} y2={y} stroke="#e2e8f0" strokeDasharray="6 8" />
                   <text x={MARGIN.left - 12} y={y + 4} fill="#64748b" fontSize="12" textAnchor="end">
                     {Math.round(tick).toLocaleString("en-IN")}
                   </text>
@@ -317,7 +329,7 @@ export function PremiumDecayChart({
               );
             })}
 
-            <line x1={MARGIN.left} x2={SVG_WIDTH - MARGIN.right} y1={zeroY} y2={zeroY} stroke="#0f172a" strokeWidth="1.5" />
+            <line x1={MARGIN.left} x2={svgWidth - MARGIN.right} y1={zeroY} y2={zeroY} stroke="#0f172a" strokeWidth="1.5" />
 
             <g clipPath="url(#premium-decay-plot-clip)">
               <path d={ceArea} fill="url(#ce-gradient)" />

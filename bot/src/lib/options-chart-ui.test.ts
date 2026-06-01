@@ -1,8 +1,11 @@
 import { describe, expect, it } from "vitest";
 import {
   DEFAULT_OPTIONS_CHART_MODE,
+  NSE_BAND_ROW_LIMIT,
+  NSE_SESSION_MINUTE_COUNT,
   getOptionsChartVisibility,
   getPremiumDecayPlotClipRect,
+  getPremiumDecaySvgWidth,
 } from "./options-chart-ui";
 
 describe("options chart selection", () => {
@@ -28,6 +31,27 @@ describe("premium decay plot clipping", () => {
       x: 68,
       y: 28,
       width: 904,
+      height: 336,
+    });
+  });
+});
+
+describe("premium decay session scrolling", () => {
+  it("retains every one-minute timestamp in the NSE session and all band rows", () => {
+    expect(NSE_SESSION_MINUTE_COUNT).toBe(376);
+    expect(NSE_BAND_ROW_LIMIT).toBe(4136);
+  });
+
+  it("renders a wider SVG for a complete session while preserving the base width for short charts", () => {
+    expect(getPremiumDecaySvgWidth(120)).toBe(1000);
+    expect(getPremiumDecaySvgWidth(NSE_SESSION_MINUTE_COUNT)).toBe(2945);
+  });
+
+  it("expands the plot clip rectangle with the scrollable SVG canvas", () => {
+    expect(getPremiumDecayPlotClipRect(2945)).toEqual({
+      x: 68,
+      y: 28,
+      width: 2849,
       height: 336,
     });
   });
