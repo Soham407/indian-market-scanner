@@ -13,6 +13,18 @@ export function getPremiumDecaySvgWidth(totalMinutes: number) {
   return PLOT_HORIZONTAL_MARGIN + Math.ceil((totalMinutes - 1) * ((BASE_SVG_WIDTH - PLOT_HORIZONTAL_MARGIN) / (BASE_VISIBLE_MINUTES - 1)));
 }
 
+export function getPremiumDecayDataState(rowCount: number) {
+  return rowCount > 0 ? "live" : "waiting";
+}
+
+export function getPremiumDecayMetricValues(
+  points: Array<{ ceDecay: number; chartPeDecay: number }>,
+) {
+  return points.length > 0
+    ? points.flatMap((point) => [point.ceDecay, point.chartPeDecay, 0])
+    : [0];
+}
+
 export function getOptionsChartVisibility(mode: OptionsChartMode) {
   return {
     showAtm: mode === "atm",

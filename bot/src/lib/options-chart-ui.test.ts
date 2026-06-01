@@ -3,6 +3,8 @@ import {
   DEFAULT_OPTIONS_CHART_MODE,
   NSE_BAND_ROW_LIMIT,
   NSE_SESSION_MINUTE_COUNT,
+  getPremiumDecayDataState,
+  getPremiumDecayMetricValues,
   getOptionsChartVisibility,
   getPremiumDecayPlotClipRect,
   getPremiumDecaySvgWidth,
@@ -54,5 +56,19 @@ describe("premium decay session scrolling", () => {
       width: 2849,
       height: 336,
     });
+  });
+});
+
+describe("premium decay live-data state", () => {
+  it("shows a waiting state instead of a demo curve when no live rows exist", () => {
+    expect(getPremiumDecayDataState(0)).toBe("waiting");
+    expect(getPremiumDecayDataState(1)).toBe("live");
+  });
+
+  it("provides a finite zero baseline while live rows are empty", () => {
+    expect(getPremiumDecayMetricValues([])).toEqual([0]);
+    expect(
+      getPremiumDecayMetricValues([{ ceDecay: 3, chartPeDecay: -2 }]),
+    ).toEqual([3, -2, 0]);
   });
 });

@@ -5,7 +5,6 @@ import { getBrowserSupabaseClient } from "@/lib/supabase-browser";
 import {
   buildBandAveragedSeries,
   buildPremiumDecayAreaPath,
-  buildDemoPremiumDecayRows,
   buildLinearPremiumDecayPath,
   buildReadableTimeTickIndices,
   formatPremiumDecayTime,
@@ -14,6 +13,8 @@ import {
 } from "@/lib/premium-decay";
 import {
   NSE_BAND_ROW_LIMIT,
+  getPremiumDecayDataState,
+  getPremiumDecayMetricValues,
   getPremiumDecayPlotClipRect,
   getPremiumDecaySvgWidth,
 } from "@/lib/options-chart-ui";
@@ -33,7 +34,7 @@ type ChartMetrics = {
 };
 
 function buildMetrics(slots: PremiumDecayMinutePoint[], svgWidth: number): ChartMetrics {
-  const values = slots.flatMap((s) => [s.ceDecay, s.chartPeDecay, 0]);
+  const values = getPremiumDecayMetricValues(slots);
   const rawMin = Math.min(...values);
   const rawMax = Math.max(...values);
   const padding = Math.max(5, (rawMax - rawMin) * 0.15);
@@ -74,21 +75,6 @@ function areaPath(slots: PremiumDecayMinutePoint[], m: ChartMetrics, key: "ceDec
     (index) => sx(index, slots.length, m),
     (value) => sy(value, m),
   );
-}
-
-function demoBandSlots(): PremiumDecayMinutePoint[] {
-  const allRows: PremiumDecayRow[] = [];
-  for (let offset = -250; offset <= 250; offset += 50) {
-    const demoRows = buildDemoPremiumDecayRows(`demo-band-${offset}`).map((r) => ({
-      ...r,
-      series_key: BAND_SERIES_KEY,
-      strike: 25000 + offset,
-      ce_decay: Number(r.ce_decay) * (1 + offset * 0.001),
-      pe_decay: Number(r.pe_decay) * (1 + offset * 0.001),
-    }));
-    allRows.push(...demoRows);
-  }
-  return buildBandAveragedSeries(allRows);
 }
 
 export function BandAverageChart() {
@@ -146,11 +132,10 @@ export function BandAverageChart() {
   }, []);
 
   const slots = useMemo(() => {
-    const band = buildBandAveragedSeries(rows);
-    return band.length > 0 ? band : demoBandSlots();
+    return buildBandAveragedSeries(rows);
   }, [rows]);
 
-  const isDemo = rows.length === 0;
+  const dataState = getPremiumDecayDataState(rows.length);
   const latest = slots.at(-1);
   const svgWidth = getPremiumDecaySvgWidth(slots.length);
   const metrics = useMemo(() => buildMetrics(slots, svgWidth), [slots, svgWidth]);
@@ -208,9 +193,9 @@ export function BandAverageChart() {
           <span className="rounded-full bg-emerald-50 px-3 py-1 font-medium text-emerald-700">CE avg decay</span>
           <span className="rounded-full bg-rose-50 px-3 py-1 font-medium text-rose-700">PE avg decay</span>
           <span className="rounded-full bg-slate-100 px-3 py-1 font-medium text-slate-600">
-            {loading ? "Loading live rows..." : isDemo ? "Demo curve until live data arrives" : "Realtime feed active"}
+            {loading ? "Loading live rows..." : dataState === "waiting" ? "Waiting for live market data" : "Realtime feed active"}
           </span>
-          {latest && !isDemo ? (
+          {latest ? (
             <span className="rounded-full bg-slate-100 px-3 py-1 font-medium text-slate-600">
               Last sample {formatPremiumDecayTime(latest.sampledAt)}
             </span>
@@ -246,6 +231,14 @@ export function BandAverageChart() {
           </div>
         ) : null}
 
+        {dataState === "waiting" && !loading ? (
+          <div className="mt-4 flex min-h-56 items-center justify-center rounded-[1rem] border border-dashed border-slate-200 bg-slate-50/70 px-6 text-center">
+            <div>
+              <p className="text-sm font-semibold text-slate-700">Waiting for live market data</p>
+              <p className="mt-1 text-xs leading-5 text-slate-500">The chart will appear after the next market-hours sample arrives.</p>
+            </div>
+          </div>
+        ) : (
         <div ref={scrollRef} className="mt-4 overflow-x-auto rounded-[1rem] border border-slate-100 bg-gradient-to-b from-slate-50 to-white">
           <svg
             ref={svgRef}
@@ -339,6 +332,7 @@ export function BandAverageChart() {
             })() : null}
           </svg>
         </div>
+        )}
       </div>
     </section>
   );

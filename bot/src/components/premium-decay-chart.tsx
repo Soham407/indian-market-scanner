@@ -7,7 +7,6 @@ import {
   buildPremiumDecayAreaPath,
   buildLinearPremiumDecayPath,
   buildOneMinutePremiumDecaySeries,
-  buildDemoPremiumDecayRows,
   formatPremiumDecayTime,
   normalizePremiumDecayRows,
   type PremiumDecayMinutePoint,
@@ -16,6 +15,8 @@ import {
 } from "@/lib/premium-decay";
 import {
   NSE_SESSION_MINUTE_COUNT,
+  getPremiumDecayDataState,
+  getPremiumDecayMetricValues,
   getPremiumDecayPlotClipRect,
   getPremiumDecaySvgWidth,
 } from "@/lib/options-chart-ui";
@@ -42,7 +43,7 @@ const SVG_HEIGHT = 420;
 const MARGIN = { top: 28, right: 28, bottom: 56, left: 68 };
 
 function buildChartMetrics(points: PremiumDecayPoint[], svgWidth: number): ChartMetrics {
-  const values = points.flatMap((point) => [point.ceDecay, point.chartPeDecay, 0]);
+  const values = getPremiumDecayMetricValues(points);
   const rawMin = Math.min(...values);
   const rawMax = Math.max(...values);
   const padding = Math.max(5, (rawMax - rawMin) * 0.15);
@@ -100,10 +101,6 @@ function buildLinePath(
     (index) => scaleX(index, slots.length, metrics),
     (value) => scaleY(value, metrics),
   );
-}
-
-function renderPlaceholderSeries(seriesKey: string): PremiumDecayPoint[] {
-  return normalizePremiumDecayRows(buildDemoPremiumDecayRows(seriesKey));
 }
 
 export function PremiumDecayChart({
@@ -194,10 +191,10 @@ export function PremiumDecayChart({
   }, [maxPoints, seriesKey]);
 
   const points = useMemo(() => {
-    const normalized = normalizePremiumDecayRows(rows);
-    return normalized.length > 0 ? normalized : renderPlaceholderSeries(seriesKey);
-  }, [rows, seriesKey]);
+    return normalizePremiumDecayRows(rows);
+  }, [rows]);
 
+  const dataState = getPremiumDecayDataState(rows.length);
   const latest = points.at(-1);
   const minuteSlots = useMemo(() => buildOneMinutePremiumDecaySeries(points), [points]);
   const svgWidth = getPremiumDecaySvgWidth(minuteSlots.length);
@@ -256,7 +253,7 @@ export function PremiumDecayChart({
           <span className="rounded-full bg-emerald-50 px-3 py-1 font-medium text-emerald-700">CE premium movement</span>
           <span className="rounded-full bg-rose-50 px-3 py-1 font-medium text-rose-700">PE premium movement</span>
           <span className="rounded-full bg-slate-100 px-3 py-1 font-medium text-slate-600">
-            {loading ? "Loading live rows..." : points.length > rows.length ? "Demo curve until live data arrives" : "Realtime feed active"}
+            {loading ? "Loading live rows..." : dataState === "waiting" ? "Waiting for live market data" : "Realtime feed active"}
           </span>
           {latest ? (
             <span className="rounded-full bg-slate-100 px-3 py-1 font-medium text-slate-600">
@@ -294,6 +291,14 @@ export function PremiumDecayChart({
           </div>
         ) : null}
 
+        {dataState === "waiting" && !loading ? (
+          <div className="mt-4 flex min-h-56 items-center justify-center rounded-[1rem] border border-dashed border-slate-200 bg-slate-50/70 px-6 text-center">
+            <div>
+              <p className="text-sm font-semibold text-slate-700">Waiting for live market data</p>
+              <p className="mt-1 text-xs leading-5 text-slate-500">The chart will appear after the next market-hours sample arrives.</p>
+            </div>
+          </div>
+        ) : (
         <div ref={scrollRef} className="mt-4 overflow-x-auto rounded-[1rem] border border-slate-100 bg-gradient-to-b from-slate-50 to-white">
           <svg
             ref={svgRef}
@@ -405,6 +410,7 @@ export function PremiumDecayChart({
             })() : null}
           </svg>
         </div>
+        )}
       </div>
     </section>
   );
