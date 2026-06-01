@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
+import { BandAverageChart } from "@/components/band-average-chart";
 import { PremiumDecayChart } from "@/components/premium-decay-chart";
 import { getHeartbeatStatus } from "@/lib/heartbeat";
 import { getBrowserSupabaseClient } from "@/lib/supabase-browser";
@@ -82,11 +83,14 @@ export default function HomePage() {
           </div>
         </header>
 
-        <PremiumDecayChart
-          seriesKey="NIFTY-ATM-WEEKLY"
-          title="NIFTY premium decay"
-          subtitle="Signed CE and PE premium movement from the session baseline, streamed live from Supabase."
-        />
+        <div className="grid grid-cols-1 gap-6 lg:grid-cols-2">
+          <PremiumDecayChart
+            seriesKey="NIFTY-ATM-WEEKLY"
+            title="NIFTY premium decay"
+            subtitle="Signed CE and PE premium movement from the session baseline, streamed live from Supabase."
+          />
+          <BandAverageChart />
+        </div>
       </div>
     </main>
   );

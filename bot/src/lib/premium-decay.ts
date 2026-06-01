@@ -143,6 +143,55 @@ export function buildReadableTimeTickIndices(
   return indices;
 }
 
+export function buildBandAveragedSeries(rows: PremiumDecayRow[]): PremiumDecayMinutePoint[] {
+  if (rows.length === 0) return [];
+
+  const normalized = normalizePremiumDecayRows(rows);
+  const byMinute = new Map<string, PremiumDecayPoint[]>();
+
+  for (const point of normalized) {
+    const key = toIstMinuteKey(point.sampledAt);
+    const group = byMinute.get(key) ?? [];
+    group.push(point);
+    byMinute.set(key, group);
+  }
+
+  const firstMinute = Math.floor(normalized[0].sampledAt.getTime() / 60_000) * 60_000;
+  const lastMinute = Math.floor(normalized.at(-1)!.sampledAt.getTime() / 60_000) * 60_000;
+  const slots: PremiumDecayMinutePoint[] = [];
+  let lastKnown: PremiumDecayPoint | null = null;
+
+  for (let cursor = firstMinute; cursor <= lastMinute; cursor += 60_000) {
+    const sampledAt = new Date(cursor);
+    const minuteKey = toIstMinuteKey(sampledAt);
+    const group = byMinute.get(minuteKey);
+
+    if (group && group.length > 0) {
+      const avgCe = group.reduce((sum, p) => sum + p.ceDecay, 0) / group.length;
+      const avgPe = group.reduce((sum, p) => sum + p.peDecay, 0) / group.length;
+      const rep = group[0];
+      lastKnown = {
+        ...rep,
+        sampledAt,
+        ceDecay: avgCe,
+        peDecay: avgPe,
+        chartPeDecay: avgPe,
+      };
+    }
+
+    if (!lastKnown) continue;
+
+    slots.push({
+      ...lastKnown,
+      sampledAt,
+      minuteKey,
+      isCarriedForward: !group,
+    });
+  }
+
+  return slots;
+}
+
 export function buildDemoPremiumDecayRows(seriesKey: string): PremiumDecayRow[] {
   const base = new Date("2026-06-01T09:15:00+05:30").getTime();
   const offsets = Array.from({ length: 18 }, (_, index) => index);

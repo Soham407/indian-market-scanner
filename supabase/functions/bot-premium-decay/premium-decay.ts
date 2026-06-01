@@ -1,4 +1,6 @@
 export const PREMIUM_DECAY_SERIES_KEY = "NIFTY-ATM-WEEKLY";
+export const PREMIUM_DECAY_BAND_SERIES_KEY = "NIFTY-BAND-WEEKLY";
+export const NIFTY_STRIKE_STEP = 50;
 
 export type AngelInstrument = {
   token: string;
@@ -49,11 +51,10 @@ function normalizeStrike(strike: string): number {
   return rawStrike / 100;
 }
 
-export function selectNearestAtmOptionPair(
+function buildCompletePairsByStrike(
   instruments: AngelInstrument[],
-  underlyingLtp: number,
-  now = new Date(),
-): AtmOptionPair {
+  now: Date,
+): { expiryDate: string; byStrike: Map<number, { ce: OptionContract; pe: OptionContract }> } {
   const today = toIsoDate(now);
   const contracts = instruments
     .filter((instrument) =>
@@ -83,36 +84,71 @@ export function selectNearestAtmOptionPair(
     })
     .filter((contract): contract is NonNullable<typeof contract> => contract !== null);
 
-  const nearestExpiry = contracts
-    .map(({ contract }) => contract.expiryDate)
-    .sort()[0];
+  const nearestExpiry = contracts.map(({ contract }) => contract.expiryDate).sort()[0];
 
   if (!nearestExpiry) {
     throw new Error("No active NIFTY OPTIDX contracts found in Angel One scrip master");
   }
 
-  const byStrike = new Map<number, { ce?: OptionContract; pe?: OptionContract }>();
+  const partial = new Map<number, { ce?: OptionContract; pe?: OptionContract }>();
   for (const { optionType, contract } of contracts) {
     if (contract.expiryDate !== nearestExpiry) continue;
-    const pair = byStrike.get(contract.strike) ?? {};
+    const pair = partial.get(contract.strike) ?? {};
     pair[optionType === "CE" ? "ce" : "pe"] = contract;
-    byStrike.set(contract.strike, pair);
+    partial.set(contract.strike, pair);
   }
 
+  const byStrike = new Map<number, { ce: OptionContract; pe: OptionContract }>();
+  for (const [strike, pair] of partial) {
+    if (pair.ce && pair.pe) byStrike.set(strike, { ce: pair.ce, pe: pair.pe });
+  }
+
+  return { expiryDate: nearestExpiry, byStrike };
+}
+
+export function selectNearestAtmOptionPair(
+  instruments: AngelInstrument[],
+  underlyingLtp: number,
+  now = new Date(),
+): AtmOptionPair {
+  const { expiryDate, byStrike } = buildCompletePairsByStrike(instruments, now);
+
   const nearestPair = [...byStrike.entries()]
-    .filter((entry): entry is [number, { ce: OptionContract; pe: OptionContract }] =>
-      Boolean(entry[1].ce && entry[1].pe)
-    )
     .sort(([leftStrike], [rightStrike]) =>
       Math.abs(leftStrike - underlyingLtp) - Math.abs(rightStrike - underlyingLtp)
     )[0];
 
   if (!nearestPair) {
-    throw new Error(`No complete NIFTY CE/PE pair found for expiry ${nearestExpiry}`);
+    throw new Error(`No complete NIFTY CE/PE pair found for expiry ${expiryDate}`);
   }
 
   const [strike, pair] = nearestPair;
-  return { expiryDate: nearestExpiry, strike, ce: pair.ce, pe: pair.pe };
+  return { expiryDate, strike, ce: pair.ce, pe: pair.pe };
+}
+
+export function selectAtmBandPairs(
+  instruments: AngelInstrument[],
+  underlyingLtp: number,
+  now = new Date(),
+  sideCount = 5,
+): AtmOptionPair[] {
+  const { expiryDate, byStrike } = buildCompletePairsByStrike(instruments, now);
+
+  const atmStrike = [...byStrike.keys()]
+    .sort((a, b) => Math.abs(a - underlyingLtp) - Math.abs(b - underlyingLtp))[0];
+
+  if (atmStrike === undefined) {
+    throw new Error(`No complete NIFTY CE/PE pair found for expiry ${expiryDate}`);
+  }
+
+  const result: AtmOptionPair[] = [];
+  for (let offset = -sideCount; offset <= sideCount; offset++) {
+    const strike = atmStrike + offset * NIFTY_STRIKE_STEP;
+    const pair = byStrike.get(strike);
+    if (pair) result.push({ expiryDate, strike, ce: pair.ce, pe: pair.pe });
+  }
+
+  return result;
 }
 
 export function buildPremiumDecayPoint(
@@ -122,12 +158,13 @@ export function buildPremiumDecayPoint(
   ceLtp: number,
   peLtp: number,
   baseline?: PremiumDecayBaseline | null,
+  seriesKey = PREMIUM_DECAY_SERIES_KEY,
 ) {
   const baselineCeLtp = baseline ? Number(baseline.ce_ltp) : ceLtp;
   const baselinePeLtp = baseline ? Number(baseline.pe_ltp) : peLtp;
 
   return {
-    series_key: PREMIUM_DECAY_SERIES_KEY,
+    series_key: seriesKey,
     instrument_symbol: "NIFTY",
     expiry_date: pair.expiryDate,
     strike: pair.strike,

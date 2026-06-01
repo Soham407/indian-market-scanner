@@ -2,9 +2,12 @@ import { getMarketSessionStatus, marketClosedResponse } from "../_shared/market-
 import { createServiceClient } from "../_shared/supabase.ts";
 import {
   buildPremiumDecayPoint,
+  PREMIUM_DECAY_BAND_SERIES_KEY,
   PREMIUM_DECAY_SERIES_KEY,
+  selectAtmBandPairs,
   selectNearestAtmOptionPair,
   type AngelInstrument,
+  type AtmOptionPair,
   type PremiumDecayBaseline,
 } from "./premium-decay.ts";
 
@@ -173,7 +176,9 @@ Deno.serve(async () => {
 
     const scripResponse = await fetch(SCRIP_MASTER_URL);
     if (!scripResponse.ok) throw new Error(`Angel One scrip master failed: HTTP ${scripResponse.status}`);
-    const pair = selectNearestAtmOptionPair(await scripResponse.json() as AngelInstrument[], underlyingLtp, sampledAt);
+    const scripMaster = await scripResponse.json() as AngelInstrument[];
+
+    const pair = selectNearestAtmOptionPair(scripMaster, underlyingLtp, sampledAt);
     const [ceLtp, peLtp] = await Promise.all([
       angelLtp(apiKey, jwtToken, "NFO", pair.ce.symbol, pair.ce.token),
       angelLtp(apiKey, jwtToken, "NFO", pair.pe.symbol, pair.pe.token),
@@ -201,7 +206,50 @@ Deno.serve(async () => {
     const { error: insertError } = await supabase.from("bot_premium_decay_points").insert(point);
     if (insertError) throw new Error(`Could not insert premium decay point: ${insertError.message}`);
 
-    return Response.json({ ok: true, point });
+    // --- Band average: fetch LTPs for ATM ± 5 ITM strikes and write band rows ---
+    const bandPairs = selectAtmBandPairs(scripMaster, underlyingLtp, sampledAt);
+    const bandLtps = await Promise.all(
+      bandPairs.map((bp: AtmOptionPair) =>
+        Promise.all([
+          angelLtp(apiKey, jwtToken, "NFO", bp.ce.symbol, bp.ce.token),
+          angelLtp(apiKey, jwtToken, "NFO", bp.pe.symbol, bp.pe.token),
+        ])
+      ),
+    );
+
+    const bandBaselineResults = await Promise.all(
+      bandPairs.map((bp: AtmOptionPair) =>
+        supabase
+          .from("bot_premium_decay_points")
+          .select("ce_ltp, pe_ltp")
+          .eq("series_key", PREMIUM_DECAY_BAND_SERIES_KEY)
+          .eq("strike", bp.strike)
+          .gte("sampled_at", startOfSession)
+          .order("sampled_at", { ascending: true })
+          .limit(1)
+          .maybeSingle()
+      ),
+    );
+
+    const bandPoints = bandPairs.map((bp: AtmOptionPair, i: number) => {
+      const [bpCeLtp, bpPeLtp] = bandLtps[i];
+      const { data: bpBaseline, error: bpBaselineError } = bandBaselineResults[i];
+      if (bpBaselineError) throw new Error(`Could not read band baseline for strike ${bp.strike}: ${bpBaselineError.message}`);
+      return buildPremiumDecayPoint(
+        sampledAt,
+        bp,
+        underlyingLtp,
+        bpCeLtp,
+        bpPeLtp,
+        bpBaseline as PremiumDecayBaseline | null,
+        PREMIUM_DECAY_BAND_SERIES_KEY,
+      );
+    });
+
+    const { error: bandInsertError } = await supabase.from("bot_premium_decay_points").insert(bandPoints);
+    if (bandInsertError) throw new Error(`Could not insert band decay points: ${bandInsertError.message}`);
+
+    return Response.json({ ok: true, point, bandPointCount: bandPoints.length });
   } catch (error) {
     return Response.json(
       { error: error instanceof Error ? error.message : "Unknown error" },
