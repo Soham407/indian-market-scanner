@@ -112,7 +112,7 @@ export function BandAverageChart({ sessionDate, live }: BandAverageChartProps) {
 
       if (!isActive) return;
       if (qErr) { setError(qErr.message); setRows([]); }
-      else setRows((data ?? []) as PremiumDecayRow[]);
+      else setRows((data ?? []).reverse() as PremiumDecayRow[]);
       setLoading(false);
     };
 
