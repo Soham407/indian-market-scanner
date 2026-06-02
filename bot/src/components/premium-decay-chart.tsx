@@ -8,6 +8,8 @@ import {
   buildLinearPremiumDecayPath,
   buildOneMinutePremiumDecaySeries,
   formatPremiumDecayTime,
+  getIstSessionBounds,
+  keepLatestIstSessionPoints,
   normalizePremiumDecayRows,
   type PremiumDecayMinutePoint,
   type PremiumDecayPoint,
@@ -16,6 +18,7 @@ import {
 import {
   NSE_SESSION_MINUTE_COUNT,
   getPremiumDecayDataState,
+  getPremiumDecayFeedBehavior,
   getPremiumDecayMetricValues,
   getPremiumDecayPlotClipRect,
   getPremiumDecaySvgWidth,
@@ -23,6 +26,8 @@ import {
 
 type PremiumDecayChartProps = {
   seriesKey: string;
+  sessionDate: string;
+  live: boolean;
   title?: string;
   subtitle?: string;
   maxPoints?: number;
@@ -105,6 +110,8 @@ function buildLinePath(
 
 export function PremiumDecayChart({
   seriesKey,
+  sessionDate,
+  live,
   title = "Premium Decay",
   subtitle = "Live CE and PE decay streamed from Supabase",
   maxPoints = NSE_SESSION_MINUTE_COUNT,
@@ -119,6 +126,8 @@ export function PremiumDecayChart({
   useEffect(() => {
     let isActive = true;
     const supabase = getBrowserSupabaseClient();
+    const bounds = getIstSessionBounds(sessionDate);
+    const feed = getPremiumDecayFeedBehavior(live);
 
     const loadRows = async () => {
       setLoading(true);
@@ -128,6 +137,8 @@ export function PremiumDecayChart({
         .from("bot_premium_decay_points")
         .select("id, series_key, instrument_symbol, expiry_date, strike, sampled_at, underlying_ltp, ce_decay, pe_decay")
         .eq("series_key", seriesKey)
+        .gte("sampled_at", bounds.start)
+        .lt("sampled_at", bounds.end)
         .order("sampled_at", { ascending: false })
         .limit(maxPoints);
 
@@ -146,12 +157,16 @@ export function PremiumDecayChart({
     };
 
     void loadRows();
-    const refreshInterval = setInterval(() => {
-      void loadRows();
-    }, 30_000);
+    if (!feed.subscribeToRealtime || feed.pollIntervalMs === null) {
+      return () => {
+        isActive = false;
+      };
+    }
+
+    const refreshInterval = setInterval(() => void loadRows(), feed.pollIntervalMs);
 
     const channel = supabase
-      .channel(`premium-decay-${seriesKey}`)
+      .channel(`premium-decay-${seriesKey}-${sessionDate}`)
       .on(
         "postgres_changes",
         {
@@ -162,6 +177,9 @@ export function PremiumDecayChart({
         },
         (payload) => {
           const nextRow = payload.new as PremiumDecayRow;
+          const sampledAt = new Date(nextRow.sampled_at).getTime();
+          if (sampledAt < new Date(bounds.start).getTime() || sampledAt >= new Date(bounds.end).getTime()) return;
+
           setRows((current) => {
             const merged = [...current.filter((row) => row.id !== nextRow.id), nextRow];
             merged.sort((a, b) => new Date(a.sampled_at).getTime() - new Date(b.sampled_at).getTime());
@@ -188,13 +206,13 @@ export function PremiumDecayChart({
       clearInterval(refreshInterval);
       void supabase.removeChannel(channel);
     };
-  }, [maxPoints, seriesKey]);
+  }, [live, maxPoints, seriesKey, sessionDate]);
 
   const points = useMemo(() => {
-    return normalizePremiumDecayRows(rows);
+    return keepLatestIstSessionPoints(normalizePremiumDecayRows(rows));
   }, [rows]);
 
-  const dataState = getPremiumDecayDataState(rows.length);
+  const dataState = getPremiumDecayDataState(points.length);
   const latest = points.at(-1);
   const minuteSlots = useMemo(() => buildOneMinutePremiumDecaySeries(points), [points]);
   const svgWidth = getPremiumDecaySvgWidth(minuteSlots.length);
@@ -253,7 +271,7 @@ export function PremiumDecayChart({
           <span className="rounded-full bg-emerald-50 px-3 py-1 font-medium text-emerald-700">CE premium movement</span>
           <span className="rounded-full bg-rose-50 px-3 py-1 font-medium text-rose-700">PE premium movement</span>
           <span className="rounded-full bg-slate-100 px-3 py-1 font-medium text-slate-600">
-            {loading ? "Loading live rows..." : dataState === "waiting" ? "Waiting for live market data" : "Realtime feed active"}
+            {loading ? "Loading rows..." : dataState === "waiting" ? "Waiting for market data" : live ? "Realtime feed active" : "Historical session loaded"}
           </span>
           {latest ? (
             <span className="rounded-full bg-slate-100 px-3 py-1 font-medium text-slate-600">
@@ -268,7 +286,7 @@ export function PremiumDecayChart({
           <div>
             <span className="block text-xs uppercase tracking-[0.2em] text-slate-400">Status</span>
             <span className="mt-1 block font-medium text-slate-900">
-              {error ? "Feed error" : loading ? "Syncing" : "Streaming"}
+              {error ? "Feed error" : loading ? "Syncing" : live ? "Streaming" : "Historical"}
             </span>
           </div>
           <div>

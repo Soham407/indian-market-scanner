@@ -79,14 +79,52 @@ export function toIstMinuteKey(sampledAt: Date): string {
   return ist.toISOString().slice(0, 16);
 }
 
-export function buildOneMinutePremiumDecaySeries(points: PremiumDecayPoint[]): PremiumDecayMinutePoint[] {
-  if (points.length === 0) return [];
+export function toIstDateKey(sampledAt: Date): string {
+  return toIstMinuteKey(sampledAt).slice(0, 10);
+}
 
-  const byMinute = new Map(points.map((point) => [toIstMinuteKey(point.sampledAt), point]));
-  const firstMinute = Math.floor(points[0].sampledAt.getTime() / 60_000) * 60_000;
-  const lastMinute = Math.floor(points.at(-1)!.sampledAt.getTime() / 60_000) * 60_000;
+export function getIstSessionBounds(sessionDate: string) {
+  return {
+    start: `${sessionDate}T03:45:00.000Z`,
+    end: `${sessionDate}T10:01:00.000Z`,
+  };
+}
+
+export function isPointInIstSession(point: Pick<PremiumDecayPoint, "sampledAt">, sessionDate: string): boolean {
+  const minuteKey = toIstMinuteKey(point.sampledAt);
+  if (!minuteKey.startsWith(sessionDate)) return false;
+
+  const [hour, minute] = minuteKey.slice(11).split(":").map(Number);
+  const minutesSinceMidnight = hour * 60 + minute;
+  return minutesSinceMidnight >= 9 * 60 + 15 && minutesSinceMidnight <= 15 * 60 + 30;
+}
+
+export function filterCompletedSessionDates(sessionDates: string[], now = new Date()): string[] {
+  const today = toIstDateKey(now);
+  return [...new Set(sessionDates)]
+    .filter((sessionDate) => sessionDate < today)
+    .sort()
+    .reverse();
+}
+
+export function keepLatestIstSessionPoints(points: PremiumDecayPoint[]): PremiumDecayPoint[] {
+  const sessionPoints = points.filter((point) => isPointInIstSession(point, toIstDateKey(point.sampledAt)));
+  const latest = sessionPoints.at(-1);
+  if (!latest) return [];
+
+  const latestIstDate = toIstDateKey(latest.sampledAt);
+  return sessionPoints.filter((point) => isPointInIstSession(point, latestIstDate));
+}
+
+export function buildOneMinutePremiumDecaySeries(points: PremiumDecayPoint[]): PremiumDecayMinutePoint[] {
+  const sessionPoints = keepLatestIstSessionPoints(points);
+  if (sessionPoints.length === 0) return [];
+
+  const byMinute = new Map(sessionPoints.map((point) => [toIstMinuteKey(point.sampledAt), point]));
+  const firstMinute = Math.floor(sessionPoints[0].sampledAt.getTime() / 60_000) * 60_000;
+  const lastMinute = Math.floor(sessionPoints.at(-1)!.sampledAt.getTime() / 60_000) * 60_000;
   const slots: PremiumDecayMinutePoint[] = [];
-  let lastKnown = points[0];
+  let lastKnown = sessionPoints[0];
 
   for (let cursor = firstMinute; cursor <= lastMinute; cursor += 60_000) {
     const sampledAt = new Date(cursor);
@@ -160,7 +198,9 @@ export function buildReadableTimeTickIndices(
 export function buildBandAveragedSeries(rows: PremiumDecayRow[]): PremiumDecayMinutePoint[] {
   if (rows.length === 0) return [];
 
-  const normalized = normalizePremiumDecayRows(rows);
+  const normalized = keepLatestIstSessionPoints(normalizePremiumDecayRows(rows));
+  if (normalized.length === 0) return [];
+
   const byMinute = new Map<string, PremiumDecayPoint[]>();
 
   for (const point of normalized) {

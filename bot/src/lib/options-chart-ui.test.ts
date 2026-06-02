@@ -1,9 +1,11 @@
 import { describe, expect, it } from "vitest";
 import {
+  DEFAULT_OPTIONS_DASHBOARD_MODE,
   DEFAULT_OPTIONS_CHART_MODE,
   NSE_BAND_ROW_LIMIT,
   NSE_SESSION_MINUTE_COUNT,
   getPremiumDecayDataState,
+  getPremiumDecayFeedBehavior,
   getPremiumDecayMetricValues,
   getOptionsChartVisibility,
   getPremiumDecayPlotClipRect,
@@ -11,6 +13,10 @@ import {
 } from "./options-chart-ui";
 
 describe("options chart selection", () => {
+  it("opens on the live dashboard by default", () => {
+    expect(DEFAULT_OPTIONS_DASHBOARD_MODE).toBe("live");
+  });
+
   it("shows only the ATM premium decay chart by default", () => {
     expect(DEFAULT_OPTIONS_CHART_MODE).toBe("atm");
     expect(getOptionsChartVisibility(DEFAULT_OPTIONS_CHART_MODE)).toEqual({
@@ -70,5 +76,21 @@ describe("premium decay live-data state", () => {
     expect(
       getPremiumDecayMetricValues([{ ceDecay: 3, chartPeDecay: -2 }]),
     ).toEqual([3, -2, 0]);
+  });
+});
+
+describe("premium decay feed behavior", () => {
+  it("keeps polling and realtime enabled for the live dashboard", () => {
+    expect(getPremiumDecayFeedBehavior(true)).toEqual({
+      pollIntervalMs: 30_000,
+      subscribeToRealtime: true,
+    });
+  });
+
+  it("loads historical sessions once without polling or realtime subscriptions", () => {
+    expect(getPremiumDecayFeedBehavior(false)).toEqual({
+      pollIntervalMs: null,
+      subscribeToRealtime: false,
+    });
   });
 });

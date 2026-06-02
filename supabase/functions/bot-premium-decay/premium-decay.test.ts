@@ -1,14 +1,24 @@
-import { assertEquals } from "https://deno.land/std@0.224.0/assert/mod.ts";
 import {
+  assertEquals,
+  assertThrows,
+} from "https://deno.land/std@0.224.0/assert/mod.ts";
+import {
+  type AngelInstrument,
   buildPremiumDecayPoint,
+  collectOptionTokens,
+  indexBatchLtps,
   PREMIUM_DECAY_BAND_SERIES_KEY,
   PREMIUM_DECAY_SERIES_KEY,
+  requireBatchLtp,
   selectAtmBandPairs,
   selectNearestAtmOptionPair,
-  type AngelInstrument,
 } from "./premium-decay.ts";
 
-function contract(symbol: string, strike: string, expiry = "02JUN2026"): AngelInstrument {
+function contract(
+  symbol: string,
+  strike: string,
+  expiry = "02JUN2026",
+): AngelInstrument {
   return {
     token: symbol,
     symbol,
@@ -88,7 +98,19 @@ Deno.test("buildPremiumDecayPoint: accepts explicit seriesKey for band rows", ()
 });
 
 function bandInstruments(): AngelInstrument[] {
-  const strikes = [24750, 24800, 24850, 24900, 24950, 25000, 25050, 25100, 25150, 25200, 25250];
+  const strikes = [
+    24750,
+    24800,
+    24850,
+    24900,
+    24950,
+    25000,
+    25050,
+    25100,
+    25150,
+    25200,
+    25250,
+  ];
   return strikes.flatMap((s) => [
     contract(`NIFTY02JUN26${s * 100}CE`, String(s * 100)),
     contract(`NIFTY02JUN26${s * 100}PE`, String(s * 100)),
@@ -97,7 +119,11 @@ function bandInstruments(): AngelInstrument[] {
 
 Deno.test("selectAtmBandPairs: returns ATM + 5 ITM on each side (11 total)", () => {
   // underlyingLtp=25010 puts ATM firmly at 25000; band spans 24750–25250, all present
-  const pairs = selectAtmBandPairs(bandInstruments(), 25010, new Date("2026-06-01T04:45:00.000Z"));
+  const pairs = selectAtmBandPairs(
+    bandInstruments(),
+    25010,
+    new Date("2026-06-01T04:45:00.000Z"),
+  );
   assertEquals(pairs.length, 11);
   assertEquals(pairs[0].strike, 24750);
   assertEquals(pairs[5].strike, 25000);
@@ -105,15 +131,58 @@ Deno.test("selectAtmBandPairs: returns ATM + 5 ITM on each side (11 total)", () 
 });
 
 Deno.test("selectAtmBandPairs: skips strikes with incomplete CE/PE pair", () => {
-  const instruments = bandInstruments().filter((i) => !i.symbol.includes("2475000CE"));
-  const pairs = selectAtmBandPairs(instruments, 25010, new Date("2026-06-01T04:45:00.000Z"));
+  const instruments = bandInstruments().filter((i) =>
+    !i.symbol.includes("2475000CE")
+  );
+  const pairs = selectAtmBandPairs(
+    instruments,
+    25010,
+    new Date("2026-06-01T04:45:00.000Z"),
+  );
   assertEquals(pairs.length, 10);
   assertEquals(pairs.some((p) => p.strike === 24750), false);
 });
 
 Deno.test("selectAtmBandPairs: sideCount param controls band width", () => {
-  const pairs = selectAtmBandPairs(bandInstruments(), 25010, new Date("2026-06-01T04:45:00.000Z"), 2);
+  const pairs = selectAtmBandPairs(
+    bandInstruments(),
+    25010,
+    new Date("2026-06-01T04:45:00.000Z"),
+    2,
+  );
   assertEquals(pairs.length, 5);
   assertEquals(pairs[0].strike, 24900);
   assertEquals(pairs[4].strike, 25100);
+});
+
+Deno.test("collectOptionTokens: deduplicates ATM contracts already included in the band", () => {
+  const instruments = bandInstruments();
+  const pair = selectNearestAtmOptionPair(
+    instruments,
+    25002,
+    new Date("2026-06-01T04:00:00.000Z"),
+  );
+  const bandPairs = selectAtmBandPairs(
+    instruments,
+    25002,
+    new Date("2026-06-01T04:00:00.000Z"),
+  );
+
+  assertEquals(collectOptionTokens(pair, bandPairs).length, 22);
+});
+
+Deno.test("indexBatchLtps: indexes numeric quote values and rejects missing contracts on lookup", () => {
+  const byToken = indexBatchLtps([
+    { symbolToken: "ce-token", ltp: "123.45" },
+    { symbolToken: "pe-token", ltp: 98.7 },
+    { symbolToken: "bad-token", ltp: "not-a-number" },
+  ]);
+
+  assertEquals(requireBatchLtp(byToken, "ce-token", "NIFTYCE"), 123.45);
+  assertEquals(requireBatchLtp(byToken, "pe-token", "NIFTYPE"), 98.7);
+  assertThrows(
+    () => requireBatchLtp(byToken, "missing-token", "MISSING"),
+    Error,
+    "Angel One batch quote omitted MISSING (missing-token)",
+  );
 });

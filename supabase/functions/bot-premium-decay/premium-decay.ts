@@ -31,6 +31,11 @@ export type PremiumDecayBaseline = {
   pe_ltp: number | string;
 };
 
+export type AngelLtpQuote = {
+  symbolToken?: string;
+  ltp?: number | string;
+};
+
 function toIsoDate(date: Date): string {
   return date.toISOString().slice(0, 10);
 }
@@ -39,7 +44,11 @@ function parseAngelExpiry(expiry: string): string | null {
   const normalized = expiry.trim().toUpperCase();
   if (!normalized) return null;
 
-  const parsed = new Date(`${normalized.slice(2, 5)} ${normalized.slice(0, 2)}, ${normalized.slice(5)} UTC`);
+  const parsed = new Date(
+    `${normalized.slice(2, 5)} ${normalized.slice(0, 2)}, ${
+      normalized.slice(5)
+    } UTC`,
+  );
   return Number.isNaN(parsed.getTime()) ? null : toIsoDate(parsed);
 }
 
@@ -54,7 +63,10 @@ function normalizeStrike(strike: string): number {
 function buildCompletePairsByStrike(
   instruments: AngelInstrument[],
   now: Date,
-): { expiryDate: string; byStrike: Map<number, { ce: OptionContract; pe: OptionContract }> } {
+): {
+  expiryDate: string;
+  byStrike: Map<number, { ce: OptionContract; pe: OptionContract }>;
+} {
   const today = toIsoDate(now);
   const contracts = instruments
     .filter((instrument) =>
@@ -82,15 +94,23 @@ function buildCompletePairsByStrike(
         },
       };
     })
-    .filter((contract): contract is NonNullable<typeof contract> => contract !== null);
+    .filter((contract): contract is NonNullable<typeof contract> =>
+      contract !== null
+    );
 
-  const nearestExpiry = contracts.map(({ contract }) => contract.expiryDate).sort()[0];
+  const nearestExpiry =
+    contracts.map(({ contract }) => contract.expiryDate).sort()[0];
 
   if (!nearestExpiry) {
-    throw new Error("No active NIFTY OPTIDX contracts found in Angel One scrip master");
+    throw new Error(
+      "No active NIFTY OPTIDX contracts found in Angel One scrip master",
+    );
   }
 
-  const partial = new Map<number, { ce?: OptionContract; pe?: OptionContract }>();
+  const partial = new Map<
+    number,
+    { ce?: OptionContract; pe?: OptionContract }
+  >();
   for (const { optionType, contract } of contracts) {
     if (contract.expiryDate !== nearestExpiry) continue;
     const pair = partial.get(contract.strike) ?? {};
@@ -98,7 +118,10 @@ function buildCompletePairsByStrike(
     partial.set(contract.strike, pair);
   }
 
-  const byStrike = new Map<number, { ce: OptionContract; pe: OptionContract }>();
+  const byStrike = new Map<
+    number,
+    { ce: OptionContract; pe: OptionContract }
+  >();
   for (const [strike, pair] of partial) {
     if (pair.ce && pair.pe) byStrike.set(strike, { ce: pair.ce, pe: pair.pe });
   }
@@ -115,11 +138,14 @@ export function selectNearestAtmOptionPair(
 
   const nearestPair = [...byStrike.entries()]
     .sort(([leftStrike], [rightStrike]) =>
-      Math.abs(leftStrike - underlyingLtp) - Math.abs(rightStrike - underlyingLtp)
+      Math.abs(leftStrike - underlyingLtp) -
+      Math.abs(rightStrike - underlyingLtp)
     )[0];
 
   if (!nearestPair) {
-    throw new Error(`No complete NIFTY CE/PE pair found for expiry ${expiryDate}`);
+    throw new Error(
+      `No complete NIFTY CE/PE pair found for expiry ${expiryDate}`,
+    );
   }
 
   const [strike, pair] = nearestPair;
@@ -135,10 +161,14 @@ export function selectAtmBandPairs(
   const { expiryDate, byStrike } = buildCompletePairsByStrike(instruments, now);
 
   const atmStrike = [...byStrike.keys()]
-    .sort((a, b) => Math.abs(a - underlyingLtp) - Math.abs(b - underlyingLtp))[0];
+    .sort((a, b) =>
+      Math.abs(a - underlyingLtp) - Math.abs(b - underlyingLtp)
+    )[0];
 
   if (atmStrike === undefined) {
-    throw new Error(`No complete NIFTY CE/PE pair found for expiry ${expiryDate}`);
+    throw new Error(
+      `No complete NIFTY CE/PE pair found for expiry ${expiryDate}`,
+    );
   }
 
   const result: AtmOptionPair[] = [];
@@ -149,6 +179,44 @@ export function selectAtmBandPairs(
   }
 
   return result;
+}
+
+export function collectOptionTokens(
+  pair: AtmOptionPair,
+  bandPairs: AtmOptionPair[],
+): string[] {
+  return [
+    ...new Set([
+      pair.ce.token,
+      pair.pe.token,
+      ...bandPairs.flatMap((
+        bandPair,
+      ) => [bandPair.ce.token, bandPair.pe.token]),
+    ]),
+  ];
+}
+
+export function indexBatchLtps(quotes: AngelLtpQuote[]): Map<string, number> {
+  const byToken = new Map<string, number>();
+  for (const quote of quotes) {
+    const ltp = Number(quote.ltp);
+    if (quote.symbolToken && Number.isFinite(ltp)) {
+      byToken.set(String(quote.symbolToken), ltp);
+    }
+  }
+  return byToken;
+}
+
+export function requireBatchLtp(
+  byToken: Map<string, number>,
+  token: string,
+  symbol: string,
+): number {
+  const ltp = byToken.get(token);
+  if (ltp === undefined) {
+    throw new Error(`Angel One batch quote omitted ${symbol} (${token})`);
+  }
+  return ltp;
 }
 
 export function buildPremiumDecayPoint(

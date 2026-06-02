@@ -1,12 +1,18 @@
 import { describe, expect, it } from "vitest";
 import {
+  buildBandAveragedSeries,
   buildPremiumDecayAreaPath,
   buildReadableTimeTickIndices,
   buildLinearPremiumDecayPath,
   buildOneMinutePremiumDecaySeries,
   buildDemoPremiumDecayRows,
+  filterCompletedSessionDates,
   formatPremiumDecayTime,
+  getIstSessionBounds,
+  isPointInIstSession,
+  keepLatestIstSessionPoints,
   normalizePremiumDecayRows,
+  toIstDateKey,
   toIstMinuteKey,
 } from "./premium-decay";
 
@@ -72,9 +78,76 @@ describe("premium decay time formatting", () => {
   it("normalizes timestamps to one-minute IST keys", () => {
     expect(toIstMinuteKey(new Date("2026-06-01T06:26:59.999Z"))).toBe("2026-06-01T11:56");
   });
+
+  it("rolls the IST date over at midnight rather than UTC midnight", () => {
+    expect(toIstDateKey(new Date("2026-06-01T18:29:59.999Z"))).toBe("2026-06-01");
+    expect(toIstDateKey(new Date("2026-06-01T18:30:00.000Z"))).toBe("2026-06-02");
+  });
+
+  it("builds UTC query bounds for the selected IST market session", () => {
+    expect(getIstSessionBounds("2026-06-02")).toEqual({
+      start: "2026-06-02T03:45:00.000Z",
+      end: "2026-06-02T10:01:00.000Z",
+    });
+  });
+
+  it("recognizes only points inside the selected IST session", () => {
+    expect(isPointInIstSession({ sampledAt: new Date("2026-06-02T03:45:00.000Z") }, "2026-06-02")).toBe(true);
+    expect(isPointInIstSession({ sampledAt: new Date("2026-06-02T10:00:59.999Z") }, "2026-06-02")).toBe(true);
+    expect(isPointInIstSession({ sampledAt: new Date("2026-06-02T10:01:00.000Z") }, "2026-06-02")).toBe(false);
+    expect(isPointInIstSession({ sampledAt: new Date("2026-06-01T10:00:00.000Z") }, "2026-06-02")).toBe(false);
+  });
+
+  it("keeps only unique completed historical sessions newest-first", () => {
+    expect(filterCompletedSessionDates(
+      ["2026-05-29", "2026-06-02", "2026-05-30", "2026-05-29"],
+      new Date("2026-06-02T04:00:00.000Z"),
+    )).toEqual(["2026-05-30", "2026-05-29"]);
+  });
 });
 
 describe("one-minute premium decay series", () => {
+  it("does not render a carry-forward line across the overnight market close", () => {
+    const points = normalizePremiumDecayRows([
+      {
+        id: "previous-close",
+        series_key: "NIFTY-ATM-WEEKLY",
+        instrument_symbol: "NIFTY",
+        expiry_date: "2026-06-02",
+        strike: "23600",
+        sampled_at: "2026-06-01T15:30:00+05:30",
+        underlying_ltp: "23605.85",
+        ce_decay: "-8.2",
+        pe_decay: "5.4",
+      },
+      {
+        id: "today-open",
+        series_key: "NIFTY-ATM-WEEKLY",
+        instrument_symbol: "NIFTY",
+        expiry_date: "2026-06-02",
+        strike: "23600",
+        sampled_at: "2026-06-02T09:15:00+05:30",
+        underlying_ltp: "23611.2",
+        ce_decay: "0",
+        pe_decay: "0",
+      },
+      {
+        id: "today-after-close",
+        series_key: "NIFTY-ATM-WEEKLY",
+        instrument_symbol: "NIFTY",
+        expiry_date: "2026-06-02",
+        strike: "23600",
+        sampled_at: "2026-06-02T15:31:00+05:30",
+        underlying_ltp: "23615.4",
+        ce_decay: "-1.2",
+        pe_decay: "1.1",
+      },
+    ]);
+
+    expect(keepLatestIstSessionPoints(points).map((point) => point.id)).toEqual(["today-open"]);
+    expect(buildOneMinutePremiumDecaySeries(points).map((point) => point.id)).toEqual(["today-open"]);
+  });
+
   it("creates a separate one-minute slot and carries the last known value across missing samples", () => {
     const points = normalizePremiumDecayRows([
       {
@@ -142,6 +215,64 @@ describe("one-minute premium decay series", () => {
     );
 
     expect(path).toBe("M 0.00,90.00 L 10.00,80.00 L 20.00,70.00 L 20.00,100.00 L 0.00,100.00 Z");
+  });
+});
+
+describe("band-average premium decay series", () => {
+  it("returns an empty series when every row is outside market hours", () => {
+    expect(buildBandAveragedSeries([
+      {
+        id: "after-close",
+        series_key: "NIFTY-BAND-WEEKLY",
+        instrument_symbol: "NIFTY",
+        expiry_date: "2026-06-02",
+        strike: "23600",
+        sampled_at: "2026-06-02T15:31:00+05:30",
+        underlying_ltp: "23615.4",
+        ce_decay: "-1.2",
+        pe_decay: "1.1",
+      },
+    ])).toEqual([]);
+  });
+
+  it("does not average or carry rows across the overnight market close", () => {
+    const series = buildBandAveragedSeries([
+      {
+        id: "previous-close",
+        series_key: "NIFTY-BAND-WEEKLY",
+        instrument_symbol: "NIFTY",
+        expiry_date: "2026-06-02",
+        strike: "23600",
+        sampled_at: "2026-06-01T15:30:00+05:30",
+        underlying_ltp: "23605.85",
+        ce_decay: "-8.2",
+        pe_decay: "5.4",
+      },
+      {
+        id: "today-open",
+        series_key: "NIFTY-BAND-WEEKLY",
+        instrument_symbol: "NIFTY",
+        expiry_date: "2026-06-02",
+        strike: "23600",
+        sampled_at: "2026-06-02T09:15:00+05:30",
+        underlying_ltp: "23611.2",
+        ce_decay: "0",
+        pe_decay: "0",
+      },
+      {
+        id: "today-after-close",
+        series_key: "NIFTY-BAND-WEEKLY",
+        instrument_symbol: "NIFTY",
+        expiry_date: "2026-06-02",
+        strike: "23600",
+        sampled_at: "2026-06-02T15:31:00+05:30",
+        underlying_ltp: "23615.4",
+        ce_decay: "-1.2",
+        pe_decay: "1.1",
+      },
+    ]);
+
+    expect(series.map((point) => point.id)).toEqual(["today-open"]);
   });
 });
 

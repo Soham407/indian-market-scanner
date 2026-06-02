@@ -26,3 +26,8 @@ NSE_Historical_Data_2015_2022/
 .claude/
 .sandcastle/worktrees/
 .superpowers/
+
+# Local runtime and research artifacts
+logs/
+quant-lab/reports/
+*.parquet

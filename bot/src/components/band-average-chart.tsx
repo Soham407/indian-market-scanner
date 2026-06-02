@@ -8,12 +8,14 @@ import {
   buildLinearPremiumDecayPath,
   buildReadableTimeTickIndices,
   formatPremiumDecayTime,
+  getIstSessionBounds,
   type PremiumDecayMinutePoint,
   type PremiumDecayRow,
 } from "@/lib/premium-decay";
 import {
   NSE_BAND_ROW_LIMIT,
   getPremiumDecayDataState,
+  getPremiumDecayFeedBehavior,
   getPremiumDecayMetricValues,
   getPremiumDecayPlotClipRect,
   getPremiumDecaySvgWidth,
@@ -77,7 +79,12 @@ function areaPath(slots: PremiumDecayMinutePoint[], m: ChartMetrics, key: "ceDec
   );
 }
 
-export function BandAverageChart() {
+type BandAverageChartProps = {
+  sessionDate: string;
+  live: boolean;
+};
+
+export function BandAverageChart({ sessionDate, live }: BandAverageChartProps) {
   const [rows, setRows] = useState<PremiumDecayRow[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -88,6 +95,8 @@ export function BandAverageChart() {
   useEffect(() => {
     let isActive = true;
     const supabase = getBrowserSupabaseClient();
+    const bounds = getIstSessionBounds(sessionDate);
+    const feed = getPremiumDecayFeedBehavior(live);
 
     const loadRows = async () => {
       setLoading(true);
@@ -96,6 +105,8 @@ export function BandAverageChart() {
         .from("bot_premium_decay_points")
         .select("id, series_key, instrument_symbol, expiry_date, strike, sampled_at, underlying_ltp, ce_decay, pe_decay")
         .eq("series_key", BAND_SERIES_KEY)
+        .gte("sampled_at", bounds.start)
+        .lt("sampled_at", bounds.end)
         .order("sampled_at", { ascending: false })
         .limit(NSE_BAND_ROW_LIMIT);
 
@@ -106,13 +117,22 @@ export function BandAverageChart() {
     };
 
     void loadRows();
-    const interval = setInterval(() => void loadRows(), 30_000);
+    if (!feed.subscribeToRealtime || feed.pollIntervalMs === null) {
+      return () => {
+        isActive = false;
+      };
+    }
+
+    const interval = setInterval(() => void loadRows(), feed.pollIntervalMs);
 
     const channel = supabase
       .channel("band-average-decay")
       .on("postgres_changes", { event: "INSERT", schema: "public", table: "bot_premium_decay_points", filter: `series_key=eq.${BAND_SERIES_KEY}` },
         (payload) => {
           const next = payload.new as PremiumDecayRow;
+          const sampledAt = new Date(next.sampled_at).getTime();
+          if (sampledAt < new Date(bounds.start).getTime() || sampledAt >= new Date(bounds.end).getTime()) return;
+
           setRows((cur) => {
             const merged = [...cur.filter((r) => r.id !== next.id), next];
             merged.sort((a, b) => new Date(a.sampled_at).getTime() - new Date(b.sampled_at).getTime());
@@ -129,13 +149,13 @@ export function BandAverageChart() {
       clearInterval(interval);
       void supabase.removeChannel(channel);
     };
-  }, []);
+  }, [live, sessionDate]);
 
   const slots = useMemo(() => {
     return buildBandAveragedSeries(rows);
   }, [rows]);
 
-  const dataState = getPremiumDecayDataState(rows.length);
+  const dataState = getPremiumDecayDataState(slots.length);
   const latest = slots.at(-1);
   const svgWidth = getPremiumDecaySvgWidth(slots.length);
   const metrics = useMemo(() => buildMetrics(slots, svgWidth), [slots, svgWidth]);
@@ -193,7 +213,7 @@ export function BandAverageChart() {
           <span className="rounded-full bg-emerald-50 px-3 py-1 font-medium text-emerald-700">CE avg decay</span>
           <span className="rounded-full bg-rose-50 px-3 py-1 font-medium text-rose-700">PE avg decay</span>
           <span className="rounded-full bg-slate-100 px-3 py-1 font-medium text-slate-600">
-            {loading ? "Loading live rows..." : dataState === "waiting" ? "Waiting for live market data" : "Realtime feed active"}
+            {loading ? "Loading rows..." : dataState === "waiting" ? "Waiting for market data" : live ? "Realtime feed active" : "Historical session loaded"}
           </span>
           {latest ? (
             <span className="rounded-full bg-slate-100 px-3 py-1 font-medium text-slate-600">
@@ -208,7 +228,7 @@ export function BandAverageChart() {
           <div>
             <span className="block text-xs uppercase tracking-[0.2em] text-slate-400">Status</span>
             <span className="mt-1 block font-medium text-slate-900">
-              {error ? "Feed error" : loading ? "Syncing" : "Streaming"}
+              {error ? "Feed error" : loading ? "Syncing" : live ? "Streaming" : "Historical"}
             </span>
           </div>
           <div>
