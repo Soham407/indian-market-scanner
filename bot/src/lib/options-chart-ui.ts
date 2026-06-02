@@ -2,7 +2,7 @@ export type OptionsDashboardMode = "live" | "historical";
 export type OptionsChartMode = "atm" | "band-average";
 
 export const DEFAULT_OPTIONS_DASHBOARD_MODE: OptionsDashboardMode = "live";
-export const DEFAULT_OPTIONS_CHART_MODE: OptionsChartMode = "atm";
+export const DEFAULT_OPTIONS_CHART_MODE: OptionsChartMode = "band-average";
 export const NSE_SESSION_MINUTE_COUNT = 376;
 export const NSE_BAND_ROW_LIMIT = NSE_SESSION_MINUTE_COUNT * 11;
 export const PREMIUM_DECAY_REFRESH_INTERVAL_MS = 30_000;

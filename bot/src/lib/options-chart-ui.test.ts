@@ -17,11 +17,11 @@ describe("options chart selection", () => {
     expect(DEFAULT_OPTIONS_DASHBOARD_MODE).toBe("live");
   });
 
-  it("shows only the ATM premium decay chart by default", () => {
-    expect(DEFAULT_OPTIONS_CHART_MODE).toBe("atm");
+  it("shows only the Band Average premium decay chart by default", () => {
+    expect(DEFAULT_OPTIONS_CHART_MODE).toBe("band-average");
     expect(getOptionsChartVisibility(DEFAULT_OPTIONS_CHART_MODE)).toEqual({
-      showAtm: true,
-      showBandAverage: false,
+      showAtm: false,
+      showBandAverage: true,
     });
   });
 
