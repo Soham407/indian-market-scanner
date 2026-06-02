@@ -1,0 +1,6 @@
+{
+  "$schema": "https://openapi.vercel.sh/vercel.json",
+  "version": 2,
+  "buildCommand": "cd bot && pnpm run build",
+  "outputDirectory": "bot/.next"
+}
