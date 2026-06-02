@@ -101,18 +101,68 @@ export function BandAverageChart({ sessionDate, live }: BandAverageChartProps) {
     const loadRows = async () => {
       setLoading(true);
       setError(null);
-      const { data, error: qErr } = await supabase
-        .from("bot_premium_decay_points")
-        .select("id, series_key, instrument_symbol, expiry_date, strike, sampled_at, underlying_ltp, ce_decay, pe_decay")
-        .eq("series_key", BAND_SERIES_KEY)
-        .gte("sampled_at", bounds.start)
-        .lt("sampled_at", bounds.end)
-        .order("sampled_at", { ascending: false })
-        .limit(BAND_ROW_QUERY_LIMIT);
+      const pages = await Promise.all([
+        supabase
+          .from("bot_premium_decay_points")
+          .select("id, series_key, instrument_symbol, expiry_date, strike, sampled_at, underlying_ltp, ce_decay, pe_decay")
+          .eq("series_key", BAND_SERIES_KEY)
+          .gte("sampled_at", bounds.start)
+          .lt("sampled_at", bounds.end)
+          .order("sampled_at", { ascending: false })
+          .range(0, 999),
+        supabase
+          .from("bot_premium_decay_points")
+          .select("id, series_key, instrument_symbol, expiry_date, strike, sampled_at, underlying_ltp, ce_decay, pe_decay")
+          .eq("series_key", BAND_SERIES_KEY)
+          .gte("sampled_at", bounds.start)
+          .lt("sampled_at", bounds.end)
+          .order("sampled_at", { ascending: false })
+          .range(1000, 1999),
+        supabase
+          .from("bot_premium_decay_points")
+          .select("id, series_key, instrument_symbol, expiry_date, strike, sampled_at, underlying_ltp, ce_decay, pe_decay")
+          .eq("series_key", BAND_SERIES_KEY)
+          .gte("sampled_at", bounds.start)
+          .lt("sampled_at", bounds.end)
+          .order("sampled_at", { ascending: false })
+          .range(2000, 2999),
+        supabase
+          .from("bot_premium_decay_points")
+          .select("id, series_key, instrument_symbol, expiry_date, strike, sampled_at, underlying_ltp, ce_decay, pe_decay")
+          .eq("series_key", BAND_SERIES_KEY)
+          .gte("sampled_at", bounds.start)
+          .lt("sampled_at", bounds.end)
+          .order("sampled_at", { ascending: false })
+          .range(3000, 3999),
+        supabase
+          .from("bot_premium_decay_points")
+          .select("id, series_key, instrument_symbol, expiry_date, strike, sampled_at, underlying_ltp, ce_decay, pe_decay")
+          .eq("series_key", BAND_SERIES_KEY)
+          .gte("sampled_at", bounds.start)
+          .lt("sampled_at", bounds.end)
+          .order("sampled_at", { ascending: false })
+          .range(4000, 4999),
+      ]);
 
       if (!isActive) return;
-      if (qErr) { setError(qErr.message); setRows([]); }
-      else setRows((data ?? []).reverse() as PremiumDecayRow[]);
+
+      const allData: PremiumDecayRow[] = [];
+      let pageError: string | null = null;
+
+      for (const page of pages) {
+        if (page.error) {
+          pageError = page.error.message;
+          break;
+        }
+        allData.push(...(page.data ?? []));
+      }
+
+      if (pageError) {
+        setError(pageError);
+        setRows([]);
+      } else {
+        setRows(allData.reverse() as PremiumDecayRow[]);
+      }
       setLoading(false);
     };
 
