@@ -31,3 +31,4 @@ NSE_Historical_Data_2015_2022/
 logs/
 quant-lab/reports/
 *.parquet
+.vercel

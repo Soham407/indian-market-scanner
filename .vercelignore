@@ -1,0 +1,35 @@
+# Large Data & Historical Files
+NSE_Historical_Data_2015_2022/
+data/
+*.parquet
+
+# Python Environment & Scripts
+.venv/
+quant-lab/
+*.py
+
+# Sandcastle & Agent Logs
+.sandcastle/
+.claude/
+logs/
+
+# Deprecated/Other apps
+dashboard/
+apps/
+supabase/
+tests/
+scripts/
+
+# Local scripts
+*.sh
+
+# Node Cache
+node_modules/
+.next/
+
+# Root Orchestrator files
+/package.json
+/package-lock.json
+/pnpm-workspace.yaml
+/pnpm-lock.yaml
+
