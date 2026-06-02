@@ -13,7 +13,6 @@ import {
   type PremiumDecayRow,
 } from "@/lib/premium-decay";
 import {
-  NSE_BAND_ROW_LIMIT,
   getPremiumDecayDataState,
   getPremiumDecayFeedBehavior,
   getPremiumDecayMetricValues,
@@ -22,6 +21,7 @@ import {
 } from "@/lib/options-chart-ui";
 
 const BAND_SERIES_KEY = "NIFTY-BAND-WEEKLY";
+const BAND_ROW_QUERY_LIMIT = 10000;
 const BASE_SVG_WIDTH = 1000;
 const SVG_HEIGHT = 420;
 const MARGIN = { top: 28, right: 28, bottom: 56, left: 68 };
@@ -108,7 +108,7 @@ export function BandAverageChart({ sessionDate, live }: BandAverageChartProps) {
         .gte("sampled_at", bounds.start)
         .lt("sampled_at", bounds.end)
         .order("sampled_at", { ascending: false })
-        .limit(NSE_BAND_ROW_LIMIT);
+        .limit(BAND_ROW_QUERY_LIMIT);
 
       if (!isActive) return;
       if (qErr) { setError(qErr.message); setRows([]); }
@@ -136,7 +136,7 @@ export function BandAverageChart({ sessionDate, live }: BandAverageChartProps) {
           setRows((cur) => {
             const merged = [...cur.filter((r) => r.id !== next.id), next];
             merged.sort((a, b) => new Date(a.sampled_at).getTime() - new Date(b.sampled_at).getTime());
-            return merged.slice(-NSE_BAND_ROW_LIMIT);
+            return merged.slice(-BAND_ROW_QUERY_LIMIT);
           });
           setError(null);
         })
