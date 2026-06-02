@@ -14,3 +14,9 @@ CREATE POLICY "read own row"
   ON allowed_emails
   FOR SELECT
   USING ((auth.jwt() ->> 'email') = email);
+
+do $$
+begin
+  alter publication supabase_realtime add table public.allowed_emails;
+exception when others then null;
+end $$;
