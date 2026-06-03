@@ -288,10 +288,11 @@ async function refreshPreviousDayOhlc(
       });
 
       if (candles.length === 0) continue;
-      const [, , high, low, close, volume] = candles[candles.length - 1];
+      const [, open, high, low, close, volume] = candles[candles.length - 1];
       if (!high) continue;
 
       await supabase.from("instruments").update({
+        previous_open: typeof open === "number" && open > 0 ? open : null,
         previous_day_high: high,
         previous_day_low: low,
         previous_close: close,

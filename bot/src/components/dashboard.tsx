@@ -3,6 +3,10 @@
 import { useEffect, useMemo, useState } from "react";
 import { BandAverageChart } from "@/components/band-average-chart";
 import { PremiumDecayChart } from "@/components/premium-decay-chart";
+import { HighestOiPanel } from "@/components/highest-oi-panel";
+import { MarqueeBanner } from "@/components/marquee-banner";
+import { NiftyYesterdayPanel } from "@/components/nifty-yesterday-panel";
+import { PcrFloatingButton } from "@/components/pcr-floating-button";
 import { getHeartbeatStatus, getPremiumDecayCollectorStatus } from "@/lib/heartbeat";
 import {
   DEFAULT_OPTIONS_DASHBOARD_MODE,
@@ -13,12 +17,16 @@ import {
 } from "@/lib/options-chart-ui";
 import { filterCompletedSessionDates, toIstDateKey } from "@/lib/premium-decay";
 import { getBrowserSupabaseClient } from "@/lib/supabase-browser";
+import type { MarqueeRequest } from "@/app/api/marquee/route";
+import { classifyPcr, computePcr, getHighestOiStrike, sumOi, type OiStrikeRow } from "@/lib/oi-analysis";
 
 type BotSettingsRow = {
   last_heartbeat_at: string | null;
   premium_decay_last_sample_at: string | null;
   premium_decay_last_error_at: string | null;
   premium_decay_last_error_message: string | null;
+  nifty_previous_open: number | null;
+  nifty_previous_close: number | null;
 };
 
 type PremiumDecaySessionRow = {
@@ -37,6 +45,9 @@ export function Dashboard() {
   const [premiumDecayLastSampleAt, setPremiumDecayLastSampleAt] = useState<string | null>(null);
   const [premiumDecayLastErrorAt, setPremiumDecayLastErrorAt] = useState<string | null>(null);
   const [premiumDecayLastErrorMessage, setPremiumDecayLastErrorMessage] = useState<string | null>(null);
+  const [niftyPrevOpen, setNiftyPrevOpen] = useState<number | null>(null);
+  const [niftyPrevClose, setNiftyPrevClose] = useState<number | null>(null);
+  const [oiRows, setOiRows] = useState<OiStrikeRow[]>([]);
   const [now, setNow] = useState(() => new Date());
   const [dashboardMode, setDashboardMode] = useState<OptionsDashboardMode>(DEFAULT_OPTIONS_DASHBOARD_MODE);
   const [chartMode, setChartMode] = useState<OptionsChartMode>(DEFAULT_OPTIONS_CHART_MODE);
@@ -58,6 +69,21 @@ export function Dashboard() {
   const chartVisibility = getOptionsChartVisibility(chartMode);
   const liveSessionDate = toIstDateKey(now);
   const selectedSessionDate = dashboardMode === "live" ? liveSessionDate : selectedHistoricalSessionDate;
+
+  const marqueeCtx = useMemo((): MarqueeRequest => {
+    const totalCe = sumOi(oiRows, "ce");
+    const totalPe = sumOi(oiRows, "pe");
+    const pcr = computePcr(totalPe, totalCe);
+    const pcrClass = pcr !== null ? classifyPcr(pcr) : null;
+    return {
+      pcr,
+      pcrClass,
+      ceMaxOiStrike: getHighestOiStrike(oiRows, "ce")?.strike ?? null,
+      peMaxOiStrike: getHighestOiStrike(oiRows, "pe")?.strike ?? null,
+      niftyPreviousClose: niftyPrevClose,
+      niftyPreviousOpen: niftyPrevOpen,
+    };
+  }, [oiRows, niftyPrevClose, niftyPrevOpen]);
 
   useEffect(() => {
     const interval = setInterval(() => setNow(new Date()), 1000);
@@ -108,7 +134,7 @@ export function Dashboard() {
     const load = async () => {
       const { data } = await supabase
         .from("bot_settings")
-        .select("last_heartbeat_at, premium_decay_last_sample_at, premium_decay_last_error_at, premium_decay_last_error_message")
+        .select("last_heartbeat_at, premium_decay_last_sample_at, premium_decay_last_error_at, premium_decay_last_error_message, nifty_previous_open, nifty_previous_close")
         .eq("id", 1)
         .single();
 
@@ -118,6 +144,8 @@ export function Dashboard() {
         setPremiumDecayLastSampleAt(row.premium_decay_last_sample_at);
         setPremiumDecayLastErrorAt(row.premium_decay_last_error_at);
         setPremiumDecayLastErrorMessage(row.premium_decay_last_error_message);
+        setNiftyPrevOpen(row.nifty_previous_open);
+        setNiftyPrevClose(row.nifty_previous_close);
       }
     };
 
@@ -139,6 +167,8 @@ export function Dashboard() {
           setPremiumDecayLastSampleAt(row.premium_decay_last_sample_at);
           setPremiumDecayLastErrorAt(row.premium_decay_last_error_at);
           setPremiumDecayLastErrorMessage(row.premium_decay_last_error_message);
+          setNiftyPrevOpen(row.nifty_previous_open);
+          setNiftyPrevClose(row.nifty_previous_close);
           setNow(new Date());
         },
       )
@@ -149,7 +179,40 @@ export function Dashboard() {
     };
   }, []);
 
+  // Fetch latest OI chain snapshot for shared use by PCR button + highest OI panel
+  useEffect(() => {
+    const supabase = getBrowserSupabaseClient();
+
+    const loadOi = async () => {
+      const today = new Date(Date.now() + 5.5 * 3600 * 1000).toISOString().slice(0, 10);
+      const { data: latestRow } = await supabase
+        .from("bot_nifty_oi_chain")
+        .select("sampled_at")
+        .eq("session_date", today)
+        .order("sampled_at", { ascending: false })
+        .limit(1)
+        .maybeSingle();
+
+      if (!latestRow) return;
+      const { sampled_at } = latestRow as { sampled_at: string };
+
+      const { data } = await supabase
+        .from("bot_nifty_oi_chain")
+        .select("strike, ce_oi, pe_oi")
+        .eq("sampled_at", sampled_at);
+
+      if (data) {
+        setOiRows((data as OiStrikeRow[]).map((r) => ({ strike: r.strike, ce_oi: r.ce_oi, pe_oi: r.pe_oi })));
+      }
+    };
+
+    void loadOi();
+    const interval = setInterval(() => void loadOi(), 60_000);
+    return () => clearInterval(interval);
+  }, []);
+
   return (
+    <>
     <main className="min-h-screen bg-[radial-gradient(circle_at_top_left,_rgba(16,185,129,0.12),_transparent_35%),linear-gradient(180deg,_#f8fafc_0%,_#eef2ff_100%)] text-slate-900">
       <div className="mx-auto flex w-full max-w-7xl flex-col gap-6 px-4 py-6 sm:px-6 lg:px-8">
         <header className="flex flex-col gap-3 rounded-[1.5rem] border border-white/60 bg-white/70 px-6 py-5 shadow-[0_20px_60px_-35px_rgba(15,23,42,0.5)] backdrop-blur sm:flex-row sm:items-center sm:justify-between">
@@ -213,6 +276,16 @@ export function Dashboard() {
             </button>
           </div>
         </header>
+
+        <MarqueeBanner ctx={marqueeCtx} />
+
+        <NiftyYesterdayPanel />
+
+        <div className="flex flex-wrap gap-4">
+          <div className="flex-1">
+            <HighestOiPanel rows={oiRows} />
+          </div>
+        </div>
 
         <div className="flex flex-wrap gap-2 rounded-2xl border border-white/60 bg-white/70 p-2 shadow-sm backdrop-blur">
           <button
@@ -309,5 +382,7 @@ export function Dashboard() {
         </div>
       </div>
     </main>
+    <PcrFloatingButton rows={oiRows} />
+    </>
   );
 }
