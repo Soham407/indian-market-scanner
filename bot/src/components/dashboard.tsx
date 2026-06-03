@@ -35,6 +35,7 @@ type BotSettingsRow = {
   nifty_previous_high: number | null;
   nifty_previous_low: number | null;
   nifty_previous_close: number | null;
+  nifty_current_ltp: number | null;
 };
 
 type PremiumDecaySessionRow = { session_date: string };
@@ -87,6 +88,7 @@ export function Dashboard() {
   const [niftyPrevHigh, setNiftyPrevHigh] = useState<number | null>(null);
   const [niftyPrevLow, setNiftyPrevLow] = useState<number | null>(null);
   const [niftyPrevClose, setNiftyPrevClose] = useState<number | null>(null);
+  const [niftyCurrentLtp, setNiftyCurrentLtp] = useState<number | null>(null);
   const [oiRows, setOiRows] = useState<OiStrikeRow[]>([]);
   const [oiLastUpdated, setOiLastUpdated] = useState<Date | null>(null);
   const [now, setNow] = useState(() => new Date());
@@ -176,7 +178,7 @@ export function Dashboard() {
     const load = async () => {
       const { data } = await supabase
         .from("bot_settings")
-        .select("last_heartbeat_at, premium_decay_last_sample_at, premium_decay_last_error_at, premium_decay_last_error_message, nifty_previous_open, nifty_previous_high, nifty_previous_low, nifty_previous_close")
+        .select("last_heartbeat_at, premium_decay_last_sample_at, premium_decay_last_error_at, premium_decay_last_error_message, nifty_previous_open, nifty_previous_high, nifty_previous_low, nifty_previous_close, nifty_current_ltp")
         .eq("id", 1)
         .single();
       if (data) {
@@ -189,6 +191,7 @@ export function Dashboard() {
         setNiftyPrevHigh(row.nifty_previous_high);
         setNiftyPrevLow(row.nifty_previous_low);
         setNiftyPrevClose(row.nifty_previous_close);
+        setNiftyCurrentLtp(row.nifty_current_ltp);
       }
     };
 
@@ -207,6 +210,7 @@ export function Dashboard() {
           setNiftyPrevHigh(row.nifty_previous_high);
           setNiftyPrevLow(row.nifty_previous_low);
           setNiftyPrevClose(row.nifty_previous_close);
+          setNiftyCurrentLtp(row.nifty_current_ltp);
           setNow(new Date());
         },
       )
@@ -314,7 +318,7 @@ export function Dashboard() {
         </header>
 
         {/* ── Marquee ────────────────────────────────────────── */}
-        <MarqueeBanner ctx={marqueeCtx} />
+        {/* <MarqueeBanner ctx={marqueeCtx} /> */}
 
         {/* ── Market data panel ──────────────────────────────── */}
         <div className="grid grid-cols-1 divide-y divide-zinc-200 border-b border-zinc-200 bg-white sm:grid-cols-3 sm:divide-x sm:divide-y-0">
