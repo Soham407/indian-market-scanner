@@ -16,6 +16,7 @@ export function SessionGuard({ userEmail, children }: SessionGuardProps) {
     const supabase = getBrowserSupabaseClient();
     const mySessionId = sessionIdRef.current;
     let isActive = true;
+    let channel: ReturnType<typeof supabase.channel> | null = null;
 
     const checkNonce = async () => {
       const { data } = await supabase
@@ -28,25 +29,31 @@ export function SessionGuard({ userEmail, children }: SessionGuardProps) {
       }
     };
 
-    // No server-side filter: the @ in email addresses breaks Supabase Realtime's
-    // filter parser. Email equality is checked client-side in the callback instead.
-    const channel = supabase
-      .channel(`session-guard-${mySessionId}`)
-      .on(
-        "postgres_changes",
-        { event: "UPDATE", schema: "public", table: "allowed_emails" },
-        (payload) => {
-          const row = payload.new as { email?: string; session_nonce?: string | null };
-          if (row.email === userEmail && row.session_nonce && row.session_nonce !== mySessionId) {
-            setIsLocked(true);
-          }
-        },
-      )
-      .subscribe();
+    const init = async () => {
+      // createBrowserClient reads the session from cookies asynchronously.
+      // Without this, the Realtime socket connects before the JWT is set and
+      // subscribes as anonymous — RLS blocks all events silently.
+      const { data: { session } } = await supabase.auth.getSession();
+      if (!isActive) return;
+      if (session?.access_token) {
+        supabase.realtime.setAuth(session.access_token);
+      }
 
-    // Claim this tab's session, then immediately verify the DB reflects our nonce.
-    // The verify step catches the race where another device claimed between subscribe and claim.
-    const claimAndVerify = async () => {
+      channel = supabase
+        .channel(`session-guard-${mySessionId}`)
+        .on(
+          "postgres_changes",
+          { event: "UPDATE", schema: "public", table: "allowed_emails" },
+          (payload) => {
+            const row = payload.new as { email?: string; session_nonce?: string | null };
+            if (row.email === userEmail && row.session_nonce && row.session_nonce !== mySessionId) {
+              setIsLocked(true);
+            }
+          },
+        )
+        .subscribe();
+
+      // Claim this tab's session, then verify the DB confirms our nonce.
       await fetch("/api/session/claim", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -54,15 +61,16 @@ export function SessionGuard({ userEmail, children }: SessionGuardProps) {
       });
       await checkNonce();
     };
-    void claimAndVerify();
 
-    // 30-second polling fallback in case Realtime misses an event.
-    const pollInterval = setInterval(() => void checkNonce(), 30_000);
+    void init();
+
+    // 10-second polling fallback in case Realtime misses an event.
+    const pollInterval = setInterval(() => void checkNonce(), 10_000);
 
     return () => {
       isActive = false;
       clearInterval(pollInterval);
-      void supabase.removeChannel(channel);
+      if (channel) void supabase.removeChannel(channel);
     };
   }, [userEmail]);
 
