@@ -249,22 +249,22 @@ export function BandAverageChart({ sessionDate, live }: BandAverageChartProps) {
       <div className="border-b border-zinc-100 bg-zinc-50/60 px-5 py-4">
         <div className="flex flex-wrap items-start justify-between gap-3">
           <div>
-            <p className="text-[10px] font-semibold uppercase tracking-[0.28em] text-zinc-400">Band average decay</p>
+            <p className="text-[10px] font-bold uppercase tracking-[0.28em] text-zinc-700">Band average decay</p>
             <h2 className="mt-1 text-base font-semibold tracking-tight text-zinc-950">NIFTY band average</h2>
           </div>
           <div className="flex flex-wrap items-center gap-2">
-            <span className="text-xs text-zinc-400">ATM ± 250 pts · 11 strikes</span>
+            <span className="text-xs font-medium text-zinc-700">ATM ± 250 pts · 11 strikes</span>
             <span className="flex items-center gap-1 text-xs font-medium text-emerald-700">
               <span className="h-2 w-2 rounded-full bg-emerald-500" />CE avg
             </span>
             <span className="flex items-center gap-1 text-xs font-medium text-rose-700">
               <span className="h-2 w-2 rounded-full bg-rose-500" />PE avg
             </span>
-            <span className="text-xs text-zinc-400">
+            <span className="text-xs font-medium text-zinc-700">
               {loading ? "Loading…" : dataState === "waiting" ? "Awaiting market data" : live ? "Live" : "Historical"}
             </span>
             {latest && (
-              <span className="text-xs text-zinc-400">· {formatPremiumDecayTime(latest.sampledAt)}</span>
+              <span className="text-xs font-medium text-zinc-700">· {formatPremiumDecayTime(latest.sampledAt)}</span>
             )}
           </div>
         </div>
@@ -281,7 +281,7 @@ export function BandAverageChart({ sessionDate, live }: BandAverageChartProps) {
           <div className="flex min-h-52 items-center justify-center rounded-lg border border-dashed border-zinc-200 bg-zinc-50 px-6 text-center">
             <div>
               <p className="text-sm font-semibold text-zinc-700">Awaiting market data</p>
-              <p className="mt-1 text-xs text-zinc-400">Chart appears after the first market-hours sample.</p>
+              <p className="mt-1 text-xs text-zinc-600">Chart appears after the first market-hours sample.</p>
             </div>
           </div>
         ) : (

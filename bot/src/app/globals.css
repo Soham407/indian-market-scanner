@@ -14,8 +14,8 @@ body {
   min-height: 100dvh;
   margin: 0;
   font-family: -apple-system, BlinkMacSystemFont, "Inter", "Segoe UI", system-ui, sans-serif;
-  background-color: oklch(96% 0.007 250);
-  color: oklch(13% 0.007 250);
+  background-color: #ffffff;
+  color: #0a0a0a;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
 }

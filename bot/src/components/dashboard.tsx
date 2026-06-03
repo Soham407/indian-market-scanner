@@ -65,14 +65,14 @@ type StatusDotProps = { alive: boolean; standby?: boolean; label: string; sub: s
 
 function StatusDot({ alive, standby, label, sub }: StatusDotProps) {
   const color = standby
-    ? "bg-zinc-300"
+    ? "bg-zinc-400"
     : alive
       ? "bg-emerald-500"
       : "bg-rose-500";
   return (
     <div className="flex items-center gap-1.5" title={sub}>
       <span className={`h-1.5 w-1.5 shrink-0 rounded-full ${color}`} />
-      <span className="text-xs font-medium text-zinc-600">{label}</span>
+      <span className="text-xs font-semibold text-zinc-900">{label}</span>
     </div>
   );
 }
@@ -247,17 +247,17 @@ export function Dashboard() {
     }`;
 
   return (
-    <main className="min-h-dvh">
-      <div className="mx-auto flex w-full max-w-7xl flex-col gap-0 px-4 sm:px-6 lg:px-8">
+    <main className="flex min-h-dvh flex-col">
+      <div className="flex flex-1 flex-col">
 
         {/* ── Header ─────────────────────────────────────────── */}
         <header className="flex items-center justify-between border-b border-zinc-200 bg-zinc-50 px-1 py-3">
           <div className="flex items-center gap-2.5">
-            <span className="text-[10px] font-semibold uppercase tracking-[0.32em] text-zinc-400">
+            <span className="text-[10px] font-semibold uppercase tracking-[0.32em] text-zinc-500">
               Indian Market Scanner
             </span>
-            <span className="text-zinc-300" aria-hidden>·</span>
-            <h1 className="text-sm font-semibold text-zinc-900">NIFTY Options Dashboard</h1>
+            <span className="text-zinc-400" aria-hidden>·</span>
+            <h1 className="text-sm font-bold text-zinc-950">NIFTY Options Dashboard</h1>
           </div>
           <div className="flex items-center gap-4">
             <StatusDot
@@ -278,7 +278,7 @@ export function Dashboard() {
                 const supabase = getBrowserSupabaseClient();
                 void supabase.auth.signOut().then(() => { window.location.href = "/login"; });
               }}
-              className="text-xs font-medium text-zinc-400 transition-colors hover:text-zinc-700"
+              className="text-xs font-semibold text-zinc-600 transition-colors hover:text-zinc-900"
             >
               Sign out
             </button>
@@ -293,7 +293,7 @@ export function Dashboard() {
 
           {/* PCR */}
           <div className="px-5 py-4">
-            <p className="text-[10px] font-semibold uppercase tracking-[0.28em] text-zinc-400">PCR</p>
+            <p className="text-[10px] font-bold uppercase tracking-[0.28em] text-zinc-700">PCR</p>
             {pcr !== null && pcrClass !== null ? (
               <div className="mt-1.5 flex items-baseline gap-2">
                 <span className={`text-3xl font-bold tabular-nums leading-none ${
@@ -312,13 +312,13 @@ export function Dashboard() {
                 </span>
               </div>
             ) : (
-              <p className="mt-2 text-sm text-zinc-400">Awaiting market data</p>
+              <p className="mt-2 text-sm font-medium text-zinc-700">Awaiting market data</p>
             )}
           </div>
 
           {/* Highest OI */}
           <div className="px-5 py-4">
-            <p className="text-[10px] font-semibold uppercase tracking-[0.28em] text-zinc-400">Highest OI</p>
+            <p className="text-[10px] font-bold uppercase tracking-[0.28em] text-zinc-700">Highest OI</p>
             {ceMax || peMax ? (
               <div className="mt-1.5 flex gap-6">
                 <div className="flex items-baseline gap-1.5">
@@ -327,7 +327,7 @@ export function Dashboard() {
                     {fmtStrike(ceMax?.strike ?? null)}
                   </span>
                   {ceMax && (
-                    <span className="text-[11px] text-zinc-400">{fmtOiLakhs(ceMax.oi)}</span>
+                    <span className="text-[11px] font-medium text-zinc-600">{fmtOiLakhs(ceMax.oi)}</span>
                   )}
                 </div>
                 <div className="flex items-baseline gap-1.5">
@@ -336,29 +336,29 @@ export function Dashboard() {
                     {fmtStrike(peMax?.strike ?? null)}
                   </span>
                   {peMax && (
-                    <span className="text-[11px] text-zinc-400">{fmtOiLakhs(peMax.oi)}</span>
+                    <span className="text-[11px] font-medium text-zinc-600">{fmtOiLakhs(peMax.oi)}</span>
                   )}
                 </div>
               </div>
             ) : (
-              <p className="mt-2 text-sm text-zinc-400">Awaiting OI data</p>
+              <p className="mt-2 text-sm font-medium text-zinc-700">Awaiting OI data</p>
             )}
           </div>
 
           {/* Nifty yesterday */}
           <div className="px-5 py-4">
-            <p className="text-[10px] font-semibold uppercase tracking-[0.28em] text-zinc-400">Nifty Yesterday</p>
+            <p className="text-[10px] font-bold uppercase tracking-[0.28em] text-zinc-700">Nifty Yesterday</p>
             <div className="mt-1.5 flex flex-wrap items-baseline gap-x-4 gap-y-1">
               {(
                 [
-                  { label: "O", value: fmtNum(niftyPrevOpen), color: "text-zinc-900" },
+                  { label: "O", value: fmtNum(niftyPrevOpen), color: "text-zinc-950" },
                   { label: "H", value: fmtNum(niftyPrevHigh), color: "text-emerald-700" },
                   { label: "L", value: fmtNum(niftyPrevLow), color: "text-rose-700" },
-                  { label: "C", value: fmtNum(niftyPrevClose), color: "text-zinc-900" },
+                  { label: "C", value: fmtNum(niftyPrevClose), color: "text-zinc-950" },
                   { label: "Mid", value: fmtNum(niftyMid), color: "text-violet-700" },
                 ] as const
               ).map(({ label, value, color }) => (
-                <span key={label} className="text-xs text-zinc-400">
+                <span key={label} className="text-xs font-medium text-zinc-700">
                   {label}{" "}
                   <strong className={`font-semibold tabular-nums ${color}`}>{value}</strong>
                 </span>
@@ -391,7 +391,7 @@ export function Dashboard() {
         {/* Historical session picker */}
         {dashboardMode === "historical" && (
           <div className="flex flex-wrap items-center gap-3 border-b border-zinc-200 bg-white px-5 py-3">
-            <label htmlFor="historical-session" className="text-xs font-semibold text-zinc-600">
+            <label htmlFor="historical-session" className="text-xs font-semibold text-zinc-900">
               Session
             </label>
             <select
@@ -406,13 +406,13 @@ export function Dashboard() {
                 <option key={d} value={d}>{formatSessionDate(d)}</option>
               ))}
             </select>
-            {historyLoading && <span className="text-xs text-zinc-400">Loading…</span>}
-            {historyError && <span className="text-xs text-amber-700">Could not load history: {historyError}</span>}
+            {historyLoading && <span className="text-xs font-medium text-zinc-600">Loading…</span>}
+            {historyError && <span className="text-xs font-medium text-amber-800">Could not load history: {historyError}</span>}
           </div>
         )}
 
         {/* ── Chart ──────────────────────────────────────────── */}
-        <div className="bg-white p-4 sm:p-6">
+        <div className="flex-1 bg-white p-4 sm:p-6">
           {selectedSessionDate && chartVisibility.showAtm && (
             <PremiumDecayChart
               key={`${dashboardMode}-${selectedSessionDate}-atm`}
@@ -436,7 +436,7 @@ export function Dashboard() {
             <div className="flex min-h-56 items-center justify-center rounded-lg border border-dashed border-zinc-200 px-6 text-center">
               <div>
                 <p className="text-sm font-semibold text-zinc-700">No completed sessions yet</p>
-                <p className="mt-1 text-xs text-zinc-400">
+                <p className="mt-1 text-xs text-zinc-600">
                   Today&apos;s session will appear after the 00:00 IST rollover.
                 </p>
               </div>
