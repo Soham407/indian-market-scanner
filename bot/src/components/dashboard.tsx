@@ -401,24 +401,41 @@ export function Dashboard() {
             )}
           </div>
 
-          {/* Nifty yesterday */}
+            {/* Nifty current + yesterday */}
           <div className="px-5 py-4">
-            <p className="text-[10px] font-bold uppercase tracking-[0.28em] text-zinc-700">Nifty Yesterday</p>
-            <div className="mt-1.5 flex flex-wrap items-baseline gap-x-4 gap-y-1">
-              {(
-                [
-                  { label: "O", value: fmtNum(niftyPrevOpen), color: "text-zinc-950" },
-                  { label: "H", value: fmtNum(niftyPrevHigh), color: "text-emerald-700" },
-                  { label: "L", value: fmtNum(niftyPrevLow), color: "text-rose-700" },
-                  { label: "C", value: fmtNum(niftyPrevClose), color: "text-zinc-950" },
-                  { label: "Mid", value: fmtNum(niftyMid), color: "text-violet-700" },
-                ] as const
-              ).map(({ label, value, color }) => (
-                <span key={label} className="text-xs font-medium text-zinc-700">
-                  {label}{" "}
-                  <strong className={`font-semibold tabular-nums ${color}`}>{value}</strong>
-                </span>
-              ))}
+            <div className="flex items-start justify-between gap-4">
+              <div>
+                <p className="text-[10px] font-bold uppercase tracking-[0.28em] text-zinc-700">Nifty 50</p>
+                {niftyCurrentLtp !== null ? (
+                  <p className="mt-1 text-2xl font-bold tabular-nums leading-none text-zinc-950">
+                    {niftyCurrentLtp.toLocaleString("en-IN", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                  </p>
+                ) : (
+                  <p className="mt-1 text-2xl font-bold tabular-nums leading-none text-zinc-300">—</p>
+                )}
+                <p className="mt-0.5 text-[11px] text-zinc-400">
+                  {marketOpen ? "Live spot" : "Last close"}
+                </p>
+              </div>
+              <div className="shrink-0">
+                <p className="text-[10px] font-bold uppercase tracking-[0.28em] text-zinc-700">Yesterday</p>
+                <div className="mt-1.5 flex flex-col gap-0.5">
+                  {(
+                    [
+                      { label: "O", value: fmtNum(niftyPrevOpen), color: "text-zinc-950" },
+                      { label: "H", value: fmtNum(niftyPrevHigh), color: "text-emerald-700" },
+                      { label: "L", value: fmtNum(niftyPrevLow), color: "text-rose-700" },
+                      { label: "C", value: fmtNum(niftyPrevClose), color: "text-zinc-950" },
+                      { label: "Mid", value: fmtNum(niftyMid), color: "text-violet-700" },
+                    ] as const
+                  ).map(({ label, value, color }) => (
+                    <span key={label} className="text-[11px] font-medium text-zinc-500">
+                      {label}{" "}
+                      <strong className={`font-semibold tabular-nums ${color}`}>{value}</strong>
+                    </span>
+                  ))}
+                </div>
+              </div>
             </div>
           </div>
 

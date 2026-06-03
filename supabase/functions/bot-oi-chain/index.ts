@@ -8,18 +8,45 @@ const ANGEL_BASE = "https://apiconnect.angelone.in";
 const NIFTY_TOKEN = "99926000";
 const NIFTY_EXCHANGE = "NSE";
 const NIFTY_SYMBOL = "Nifty 50";
+const NFO_EXCHANGE = "NFO";
+const SCRIP_MASTER_URL =
+  "https://margincalculator.angelbroking.com/OpenAPI_File/files/OpenAPIScripMaster.json";
+const SCRIP_CACHE_MS = 6 * 3600 * 1000;
+const BATCH_SIZE = 50;
 
-// Angel One optionGreek endpoint — returns full chain per expiry with OI per strike.
-// Response row shape: { strikePrice, optionType: "CE"|"PE", opnInterest, ltp, ... }
-type OptionGreekRow = {
-  strikePrice: string;
-  optionType: "CE" | "PE";
+type ScripEntry = {
+  token: string;
+  symbol: string;
+  exch_seg: string;
+  instrumenttype: string;
+  strike: string;
+  optiontype: string;
+  expiry: string;
+};
+
+type FullQuote = {
+  symbolToken: string;
+  tradingSymbol: string;
   opnInterest: number;
-  chgInOpnInterest: number;
   ltp: number;
 };
 
-// Next Thursday on or after today (NSE weekly expiry convention).
+let cachedScrip: ScripEntry[] | null = null;
+let cachedScripAt = 0;
+
+function istDateKey(d: Date): string {
+  return new Date(d.getTime() + 5.5 * 3600 * 1000).toISOString().slice(0, 10);
+}
+
+function lastTradingDateIst(d: Date): string {
+  const istMs = d.getTime() + 5.5 * 3600 * 1000;
+  const day = new Date(istMs).getUTCDay();
+  const back = day === 0 ? 2 : day === 1 ? 3 : 1;
+  return new Date(istMs - back * 86400 * 1000).toISOString().slice(0, 10);
+}
+
+// Angel One weekly option symbols: NIFTY09JUN2623350CE
+// expiry field in scrip master: "09JUN2026"
 function nextWeeklyExpiry(from: Date): string {
   const d = new Date(from);
   const day = d.getUTCDay();
@@ -30,15 +57,13 @@ function nextWeeklyExpiry(from: Date): string {
   return `${dd}${mon}${d.getUTCFullYear()}`;
 }
 
-function istDateKey(d: Date): string {
-  return new Date(d.getTime() + 5.5 * 3600 * 1000).toISOString().slice(0, 10);
-}
-
-function lastTradingDateIst(d: Date): string {
-  const nowIstMs = d.getTime() + 5.5 * 3600 * 1000;
-  const dayOfWeek = new Date(nowIstMs).getUTCDay();
-  const daysBack = dayOfWeek === 0 ? 2 : dayOfWeek === 1 ? 3 : 1;
-  return new Date(nowIstMs - daysBack * 86400 * 1000).toISOString().slice(0, 10);
+// "09JUN2026" → "2026-06-09"
+function expiryToIso(expiry: string): string {
+  const MON: Record<string, string> = {
+    JAN:"01",FEB:"02",MAR:"03",APR:"04",MAY:"05",JUN:"06",
+    JUL:"07",AUG:"08",SEP:"09",OCT:"10",NOV:"11",DEC:"12",
+  };
+  return `${expiry.slice(5)}-${MON[expiry.slice(2, 5)]}-${expiry.slice(0, 2)}`;
 }
 
 async function generateTotp(secret: string): Promise<string> {
@@ -75,7 +100,7 @@ async function generateTotp(secret: string): Promise<string> {
   return (code % 1_000_000).toString().padStart(6, "0");
 }
 
-function headers(apiKey: string, jwt?: string): Record<string, string> {
+function hdrs(apiKey: string, jwt?: string): Record<string, string> {
   const h: Record<string, string> = {
     "Content-Type": "application/json",
     "Accept": "application/json",
@@ -92,14 +117,11 @@ function headers(apiKey: string, jwt?: string): Record<string, string> {
 
 async function login(apiKey: string, clientId: string, pin: string, totp: string): Promise<string> {
   const resp = await fetch(`${ANGEL_BASE}/rest/auth/angelbroking/user/v1/loginByPassword`, {
-    method: "POST",
-    headers: headers(apiKey),
+    method: "POST", headers: hdrs(apiKey),
     body: JSON.stringify({ clientcode: clientId, password: pin, totp }),
   });
   const data = await resp.json();
-  if (!data?.status || !data?.data?.jwtToken) {
-    throw new Error(`Angel One login failed: ${data?.message ?? JSON.stringify(data)}`);
-  }
+  if (!data?.status || !data?.data?.jwtToken) throw new Error(`Login failed: ${data?.message}`);
   return data.data.jwtToken as string;
 }
 
@@ -108,52 +130,47 @@ async function authenticate(): Promise<{ apiKey: string; jwtToken: string }> {
   const secretKey = Deno.env.get("AngelOne_SecretKey");
   const clientId = Deno.env.get("AngelOne_ClientID");
   const pin = Deno.env.get("AngelOne_PIN");
-  if (!apiKey || !secretKey || !clientId || !pin) {
-    throw new Error("Missing secrets: AngelOne_Apikey, AngelOne_SecretKey, AngelOne_ClientID, AngelOne_PIN");
-  }
+  if (!apiKey || !secretKey || !clientId || !pin) throw new Error("Missing Angel One secrets");
   return { apiKey, jwtToken: await login(apiKey, clientId, pin, await generateTotp(secretKey)) };
+}
+
+async function getScripMaster(): Promise<ScripEntry[]> {
+  if (cachedScrip && Date.now() - cachedScripAt < SCRIP_CACHE_MS) return cachedScrip;
+  const resp = await fetch(SCRIP_MASTER_URL);
+  if (!resp.ok) throw new Error(`Scrip master failed: ${resp.status}`);
+  cachedScrip = await resp.json() as ScripEntry[];
+  cachedScripAt = Date.now();
+  return cachedScrip;
 }
 
 async function fetchNiftyLtp(apiKey: string, jwt: string): Promise<number> {
   const resp = await fetch(`${ANGEL_BASE}/rest/secure/angelbroking/order/v1/getLtpData`, {
-    method: "POST",
-    headers: headers(apiKey, jwt),
+    method: "POST", headers: hdrs(apiKey, jwt),
     body: JSON.stringify({ exchange: NIFTY_EXCHANGE, tradingsymbol: NIFTY_SYMBOL, symboltoken: NIFTY_TOKEN }),
   });
   const data = await resp.json();
-  if (!data?.status || !Number.isFinite(Number(data?.data?.ltp))) {
-    throw new Error(`NIFTY LTP failed: ${data?.message ?? JSON.stringify(data)}`);
-  }
+  if (!data?.status || !Number.isFinite(Number(data?.data?.ltp))) throw new Error(`NIFTY LTP failed: ${data?.message}`);
   return Number(data.data.ltp);
 }
 
-async function fetchOptionGreeks(apiKey: string, jwt: string, expiry: string): Promise<OptionGreekRow[]> {
-  const resp = await fetch(`${ANGEL_BASE}/rest/secure/angelbroking/marketData/v1/getOptionGreeks`, {
-    method: "POST",
-    headers: headers(apiKey, jwt),
-    body: JSON.stringify({ name: "NIFTY", expirydate: expiry }),
+async function fetchBatchFull(apiKey: string, jwt: string, tokens: string[]): Promise<FullQuote[]> {
+  const resp = await fetch(`${ANGEL_BASE}/rest/secure/angelbroking/market/v1/quote/`, {
+    method: "POST", headers: hdrs(apiKey, jwt),
+    body: JSON.stringify({ mode: "FULL", exchangeTokens: { [NFO_EXCHANGE]: tokens } }),
   });
   const data = await resp.json();
-  if (!data?.status || !Array.isArray(data?.data)) {
-    throw new Error(`optionGreek failed: ${data?.message ?? JSON.stringify(data)}`);
-  }
-  return data.data as OptionGreekRow[];
+  if (!data?.status || !Array.isArray(data?.data?.fetched)) throw new Error(`Batch quote failed: ${data?.message}`);
+  return data.data.fetched as FullQuote[];
 }
 
 async function fetchNiftyYesterdayOhlc(
-  apiKey: string,
-  jwt: string,
-  yDate: string,
+  apiKey: string, jwt: string, yDate: string,
 ): Promise<{ open: number; high: number; low: number; close: number } | null> {
   const resp = await fetch(`${ANGEL_BASE}/rest/secure/angelbroking/historical/v1/getCandleData`, {
-    method: "POST",
-    headers: headers(apiKey, jwt),
+    method: "POST", headers: hdrs(apiKey, jwt),
     body: JSON.stringify({
-      exchange: NIFTY_EXCHANGE,
-      symboltoken: NIFTY_TOKEN,
-      interval: "ONE_DAY",
-      fromdate: `${yDate} 09:00`,
-      todate: `${yDate} 15:30`,
+      exchange: NIFTY_EXCHANGE, symboltoken: NIFTY_TOKEN,
+      interval: "ONE_DAY", fromdate: `${yDate} 09:00`, todate: `${yDate} 15:30`,
     }),
   });
   const data = await resp.json();
@@ -176,36 +193,74 @@ Deno.serve(async () => {
     // Fetch NIFTY spot price
     const underlyingLtp = await fetchNiftyLtp(apiKey, jwtToken);
 
-    // Fetch full option chain OI
-    const expiry = nextWeeklyExpiry(sampledAt);
-    const greeks = await fetchOptionGreeks(apiKey, jwtToken, expiry);
+    // Get all NIFTY weekly option tokens from scrip master.
+    // Use nearest-upcoming-expiry approach (same as bot-premium-decay) so we're
+    // not sensitive to the exact string format the scrip master uses for dates.
+    const scripMaster = await getScripMaster();
+    const nowIst = new Date(sampledAt.getTime() + 5.5 * 3600 * 1000);
 
-    // Group by strike → { ce_oi, pe_oi, ce_ltp, pe_ltp }
+    const allNiftyOptions = scripMaster.filter(
+      (e) => e.exch_seg === "NFO" &&
+             e.instrumenttype === "OPTIDX" &&
+             e.symbol.startsWith("NIFTY") &&
+             (e.symbol.endsWith("CE") || e.symbol.endsWith("PE")),
+    );
+
+    // Find the nearest upcoming expiry
+    const expiryDates = new Map<string, Date>();
+    for (const e of allNiftyOptions) {
+      if (expiryDates.has(e.expiry)) continue;
+      const d = new Date(e.expiry);
+      if (Number.isFinite(d.getTime()) && d > nowIst) expiryDates.set(e.expiry, d);
+    }
+    const sorted = Array.from(expiryDates.entries()).sort((a, b) => a[1].getTime() - b[1].getTime());
+    if (sorted.length === 0) {
+      return Response.json({ ok: false, error: "No upcoming NIFTY option expiries in scrip master" }, { status: 200 });
+    }
+    const [nearestExpiryStr, nearestExpiryDate] = sorted[0];
+    const expiry = nextWeeklyExpiry(sampledAt); // for logging only
+    const optionTokens = allNiftyOptions.filter((e) => e.expiry === nearestExpiryStr);
+
+    if (optionTokens.length === 0) {
+      return Response.json({ ok: false, error: `No NIFTY option tokens for nearest expiry ${nearestExpiryStr}` }, { status: 200 });
+    }
+
+    const expiryDateIso = nearestExpiryDate.toISOString().slice(0, 10);
+
+    // Batch-fetch FULL quotes (includes opnInterest)
+    const tokens = optionTokens.map((e) => e.token);
+    const allQuotes: FullQuote[] = [];
+    for (let i = 0; i < tokens.length; i += BATCH_SIZE) {
+      const batch = tokens.slice(i, i + BATCH_SIZE);
+      const quotes = await fetchBatchFull(apiKey, jwtToken, batch);
+      allQuotes.push(...quotes);
+    }
+
+    // Map token → scrip entry for strike/optiontype lookup
+    const tokenMap = new Map(optionTokens.map((e) => [e.token, e]));
+
+    // Group by strike
     type StrikeData = { ce_oi: number; pe_oi: number; ce_ltp: number | null; pe_ltp: number | null };
     const byStrike = new Map<number, StrikeData>();
-    for (const row of greeks) {
-      const strike = Number(row.strikePrice);
+
+    for (const q of allQuotes) {
+      const entry = tokenMap.get(q.symbolToken);
+      if (!entry) continue;
+      const strike = Number(entry.strike) / 100; // scrip master stores strike * 100
       if (!Number.isFinite(strike) || strike <= 0) continue;
+
       if (!byStrike.has(strike)) {
         byStrike.set(strike, { ce_oi: 0, pe_oi: 0, ce_ltp: null, pe_ltp: null });
       }
-      const entry = byStrike.get(strike)!;
-      if (row.optionType === "CE") {
-        entry.ce_oi = Number(row.opnInterest) || 0;
-        entry.ce_ltp = Number.isFinite(row.ltp) ? row.ltp : null;
-      } else if (row.optionType === "PE") {
-        entry.pe_oi = Number(row.opnInterest) || 0;
-        entry.pe_ltp = Number.isFinite(row.ltp) ? row.ltp : null;
-      }
+      const sd = byStrike.get(strike)!;
+      const oi = Number(q.opnInterest) || 0;
+      const ltp = Number.isFinite(q.ltp) ? q.ltp : null;
+
+      if (entry.symbol.endsWith("CE")) { sd.ce_oi = oi; sd.ce_ltp = ltp; }
+      else if (entry.symbol.endsWith("PE")) { sd.pe_oi = oi; sd.pe_ltp = ltp; }
     }
 
     const sessionDate = istDateKey(sampledAt);
-    // Convert "05JUN2026" → "2026-06-05"
-    const MON: Record<string, string> = {
-      JAN:"01",FEB:"02",MAR:"03",APR:"04",MAY:"05",JUN:"06",
-      JUL:"07",AUG:"08",SEP:"09",OCT:"10",NOV:"11",DEC:"12",
-    };
-    const expiryDateIso = `${expiry.slice(5)}-${MON[expiry.slice(2,5)]}-${expiry.slice(0,2)}`;
 
     const rows = Array.from(byStrike.entries()).map(([strike, d]) => ({
       sampled_at: sampledAt.toISOString(),
@@ -221,43 +276,37 @@ Deno.serve(async () => {
 
     if (rows.length > 0) {
       const { error: insertErr } = await supabase.from("bot_nifty_oi_chain").insert(rows);
-      if (insertErr) throw new Error(`OI chain insert failed: ${insertErr.message}`);
+      if (insertErr) throw new Error(`OI insert failed: ${insertErr.message}`);
     }
 
-    // Purge rows from sessions older than today to cap table size
-    const { error: purgeErr } = await supabase
-      .from("bot_nifty_oi_chain")
-      .delete()
-      .lt("session_date", sessionDate);
-    if (purgeErr) console.warn("[bot-oi-chain] purge failed:", purgeErr.message);
+    // Purge old sessions
+    await supabase.from("bot_nifty_oi_chain").delete().lt("session_date", sessionDate);
 
-    // Refresh NIFTY yesterday OHLC in bot_settings once per session date
+    // Refresh NIFTY yesterday OHLC + current LTP in bot_settings (OHLC once per session)
     const { data: settings } = await supabase
-      .from("bot_settings")
-      .select("nifty_previous_date")
-      .eq("id", 1)
-      .single();
-
+      .from("bot_settings").select("nifty_previous_date").eq("id", 1).maybeSingle();
     const storedDate = (settings as { nifty_previous_date: string | null } | null)?.nifty_previous_date;
+
+    const settingsPatch: Record<string, unknown> = { id: 1, nifty_current_ltp: underlyingLtp };
+
     if (storedDate !== sessionDate) {
       const yDate = lastTradingDateIst(sampledAt);
       const ohlc = await fetchNiftyYesterdayOhlc(apiKey, jwtToken, yDate);
       if (ohlc) {
-        await supabase.from("bot_settings").update({
-          nifty_previous_open: ohlc.open,
-          nifty_previous_high: ohlc.high,
-          nifty_previous_low: ohlc.low,
-          nifty_previous_close: ohlc.close,
-          nifty_previous_date: sessionDate,
-        }).eq("id", 1);
+        settingsPatch.nifty_previous_open = ohlc.open;
+        settingsPatch.nifty_previous_high = ohlc.high;
+        settingsPatch.nifty_previous_low = ohlc.low;
+        settingsPatch.nifty_previous_close = ohlc.close;
+        settingsPatch.nifty_previous_date = sessionDate;
       }
     }
 
-    return Response.json({ ok: true, strikes: rows.length, expiry, underlying_ltp: underlyingLtp });
+    await supabase.from("bot_settings").upsert(settingsPatch, { onConflict: "id" });
+
+    return Response.json({ ok: true, strikes: rows.length, expiry: nearestExpiryStr, underlying_ltp: underlyingLtp, tokens_found: optionTokens.length });
   } catch (err) {
-    return Response.json(
-      { error: err instanceof Error ? err.message : "Unknown error" },
-      { status: 500 },
-    );
+    const msg = err instanceof Error ? err.message : String(err);
+    console.error("[bot-oi-chain]", msg);
+    return Response.json({ error: msg }, { status: 500 });
   }
 });
