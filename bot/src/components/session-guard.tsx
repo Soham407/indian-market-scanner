@@ -3,6 +3,8 @@
 import { useEffect, useRef, useState } from "react";
 import { getBrowserSupabaseClient } from "@/lib/supabase-browser";
 
+const TWELVE_HOURS_MS = 12 * 60 * 60 * 1000;
+
 type SessionGuardProps = {
   userEmail: string;
   children: React.ReactNode;
@@ -17,15 +19,34 @@ export function SessionGuard({ userEmail, children }: SessionGuardProps) {
     const mySessionId = sessionIdRef.current;
     let isActive = true;
     let channel: ReturnType<typeof supabase.channel> | null = null;
+    let expireTimeout: ReturnType<typeof setTimeout> | null = null;
+
+    const signOutExpired = () => {
+      void supabase.auth.signOut().then(() => {
+        window.location.href = "/login?error=session_expired";
+      });
+    };
 
     const checkNonce = async () => {
       const { data } = await supabase
         .from("allowed_emails")
-        .select("session_nonce")
+        .select("session_nonce, session_started_at")
         .eq("email", userEmail)
         .maybeSingle();
-      if (isActive && data?.session_nonce && data.session_nonce !== mySessionId) {
+      if (!isActive) return;
+
+      if (data?.session_nonce && data.session_nonce !== mySessionId) {
         setIsLocked(true);
+        return;
+      }
+
+      // Polling fallback for the 12-hour expiry — catches the case where the
+      // setTimeout below didn't fire (e.g. device was asleep).
+      if (data?.session_started_at) {
+        const elapsed = Date.now() - new Date(data.session_started_at).getTime();
+        if (elapsed > TWELVE_HOURS_MS) {
+          signOutExpired();
+        }
       }
     };
 
@@ -45,9 +66,19 @@ export function SessionGuard({ userEmail, children }: SessionGuardProps) {
           "postgres_changes",
           { event: "UPDATE", schema: "public", table: "allowed_emails" },
           (payload) => {
-            const row = payload.new as { email?: string; session_nonce?: string | null };
-            if (row.email === userEmail && row.session_nonce && row.session_nonce !== mySessionId) {
+            const row = payload.new as {
+              email?: string;
+              session_nonce?: string | null;
+              session_started_at?: string | null;
+            };
+            if (row.email !== userEmail) return;
+            if (row.session_nonce && row.session_nonce !== mySessionId) {
               setIsLocked(true);
+              return;
+            }
+            if (row.session_started_at) {
+              const elapsed = Date.now() - new Date(row.session_started_at).getTime();
+              if (elapsed > TWELVE_HOURS_MS) signOutExpired();
             }
           },
         )
@@ -59,7 +90,30 @@ export function SessionGuard({ userEmail, children }: SessionGuardProps) {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ sessionId: mySessionId }),
       });
-      await checkNonce();
+
+      // Fetch session_started_at once and schedule an exact setTimeout for the
+      // remaining time until 12 hours. This triggers even if polling is paused.
+      const { data } = await supabase
+        .from("allowed_emails")
+        .select("session_nonce, session_started_at")
+        .eq("email", userEmail)
+        .maybeSingle();
+      if (!isActive) return;
+
+      if (data?.session_nonce && data.session_nonce !== mySessionId) {
+        setIsLocked(true);
+        return;
+      }
+
+      if (data?.session_started_at) {
+        const elapsed = Date.now() - new Date(data.session_started_at).getTime();
+        const remaining = TWELVE_HOURS_MS - elapsed;
+        if (remaining <= 0) {
+          signOutExpired();
+          return;
+        }
+        expireTimeout = setTimeout(signOutExpired, remaining);
+      }
     };
 
     void init();
@@ -70,6 +124,7 @@ export function SessionGuard({ userEmail, children }: SessionGuardProps) {
     return () => {
       isActive = false;
       clearInterval(pollInterval);
+      if (expireTimeout) clearTimeout(expireTimeout);
       if (channel) void supabase.removeChannel(channel);
     };
   }, [userEmail]);

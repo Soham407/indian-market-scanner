@@ -65,7 +65,7 @@ export async function GET(request: NextRequest) {
   const nonce = crypto.randomUUID();
   await adminClient
     .from("allowed_emails")
-    .update({ session_nonce: nonce })
+    .update({ session_nonce: nonce, session_started_at: new Date().toISOString() })
     .eq("email", email);
 
   return NextResponse.redirect(origin);

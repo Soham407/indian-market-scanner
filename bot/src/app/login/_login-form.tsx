@@ -6,6 +6,7 @@ import { getBrowserSupabaseClient } from "@/lib/supabase-browser";
 const ERROR_MESSAGES: Record<string, string> = {
   not_allowed: "Your account isn't authorised to access this dashboard.",
   signed_out_elsewhere: "You were signed in from another device.",
+  session_expired: "Your session expired after 12 hours. Please sign in again.",
 };
 
 export function LoginForm() {
