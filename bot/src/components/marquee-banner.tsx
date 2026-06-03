@@ -1,17 +1,12 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
+import { isNseMarketOpen } from "@/lib/market-hours";
 import type { MarqueeRequest } from "@/app/api/marquee/route";
 
 type MarqueeBannerProps = {
   ctx: MarqueeRequest;
 };
-
-function isMarketHours(): boolean {
-  const nowIst = new Date(Date.now() + 5.5 * 3600 * 1000);
-  const totalMin = nowIst.getUTCHours() * 60 + nowIst.getUTCMinutes();
-  return totalMin >= 3 * 60 + 45 && totalMin < 10 * 60;
-}
 
 export function MarqueeBanner({ ctx }: MarqueeBannerProps) {
   const [messages, setMessages] = useState<string[]>([]);
@@ -43,7 +38,7 @@ export function MarqueeBanner({ ctx }: MarqueeBannerProps) {
     })();
   }, [ctx]);
 
-  if (!isMarketHours() && !loaded) return null;
+  if (!isNseMarketOpen() && !loaded) return null;
   if (loaded && messages.length === 0) return null;
 
   const SEPARATOR = "  ·  ";

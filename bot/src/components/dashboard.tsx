@@ -23,6 +23,7 @@ import {
 } from "@/lib/oi-analysis";
 import { filterCompletedSessionDates, toIstDateKey } from "@/lib/premium-decay";
 import { getBrowserSupabaseClient } from "@/lib/supabase-browser";
+import { isNseMarketOpen, fmtIstTime } from "@/lib/market-hours";
 import type { MarqueeRequest } from "@/app/api/marquee/route";
 
 type BotSettingsRow = {
@@ -87,6 +88,7 @@ export function Dashboard() {
   const [niftyPrevLow, setNiftyPrevLow] = useState<number | null>(null);
   const [niftyPrevClose, setNiftyPrevClose] = useState<number | null>(null);
   const [oiRows, setOiRows] = useState<OiStrikeRow[]>([]);
+  const [oiLastUpdated, setOiLastUpdated] = useState<Date | null>(null);
   const [now, setNow] = useState(() => new Date());
   const [dashboardMode, setDashboardMode] = useState<OptionsDashboardMode>(DEFAULT_OPTIONS_DASHBOARD_MODE);
   const [chartMode, setChartMode] = useState<OptionsChartMode>(DEFAULT_OPTIONS_CHART_MODE);
@@ -114,6 +116,8 @@ export function Dashboard() {
   const niftyMid = niftyPrevHigh !== null && niftyPrevLow !== null
     ? getNiftyMidValue(niftyPrevHigh, niftyPrevLow)
     : null;
+
+  const marketOpen = useMemo(() => isNseMarketOpen(now), [now]);
 
   const marqueeCtx = useMemo((): MarqueeRequest => ({
     pcr,
@@ -211,7 +215,7 @@ export function Dashboard() {
     return () => { void supabase.removeChannel(channel); };
   }, []);
 
-  // OI chain polling
+  // OI chain polling — 30 s during market hours, 5 min outside
   useEffect(() => {
     const supabase = getBrowserSupabaseClient();
 
@@ -233,12 +237,27 @@ export function Dashboard() {
         .select("strike, ce_oi, pe_oi")
         .eq("sampled_at", sampled_at);
 
-      if (data) setOiRows((data as OiStrikeRow[]).map((r) => ({ strike: r.strike, ce_oi: r.ce_oi, pe_oi: r.pe_oi })));
+      if (data) {
+        setOiRows((data as OiStrikeRow[]).map((r) => ({ strike: r.strike, ce_oi: r.ce_oi, pe_oi: r.pe_oi })));
+        setOiLastUpdated(new Date());
+      }
     };
 
     void loadOi();
-    const interval = setInterval(() => void loadOi(), 60_000);
-    return () => clearInterval(interval);
+
+    // Schedule next poll; re-schedule on each tick so the interval adjusts
+    // automatically when the session opens or closes.
+    let timeout: ReturnType<typeof setTimeout>;
+    const schedule = () => {
+      const intervalMs = isNseMarketOpen() ? 30_000 : 5 * 60_000;
+      timeout = setTimeout(async () => {
+        await loadOi();
+        schedule();
+      }, intervalMs);
+    };
+    schedule();
+
+    return () => clearTimeout(timeout);
   }, []);
 
   const tabBtn = (active: boolean) =>
@@ -260,6 +279,15 @@ export function Dashboard() {
             <h1 className="text-sm font-bold text-zinc-950">NIFTY Options Dashboard</h1>
           </div>
           <div className="flex items-center gap-4">
+            {/* Market session pill */}
+            <span className={`inline-flex items-center gap-1.5 rounded-full px-2.5 py-1 text-[11px] font-bold tracking-wide ${
+              marketOpen
+                ? "bg-emerald-50 text-emerald-800 ring-1 ring-emerald-200"
+                : "bg-zinc-100 text-zinc-500 ring-1 ring-zinc-200"
+            }`}>
+              <span className={`h-1.5 w-1.5 rounded-full ${marketOpen ? "animate-pulse bg-emerald-500" : "bg-zinc-400"}`} />
+              {marketOpen ? "MARKET OPEN" : "MARKET CLOSED"}
+            </span>
             <StatusDot
               alive={status.isAlive}
               standby={status.label === "STANDBY"}
@@ -295,24 +323,36 @@ export function Dashboard() {
           <div className="px-5 py-4">
             <p className="text-[10px] font-bold uppercase tracking-[0.28em] text-zinc-700">PCR</p>
             {pcr !== null && pcrClass !== null ? (
-              <div className="mt-1.5 flex items-baseline gap-2">
-                <span className={`text-3xl font-bold tabular-nums leading-none ${
-                  pcrClass === "bullish" ? "text-emerald-700"
-                  : pcrClass === "bearish" ? "text-rose-700"
-                  : "text-zinc-700"
-                }`}>
-                  {pcr.toFixed(2)}
-                </span>
-                <span className={`text-xs font-semibold uppercase tracking-wide ${
-                  pcrClass === "bullish" ? "text-emerald-600"
-                  : pcrClass === "bearish" ? "text-rose-600"
-                  : "text-zinc-500"
-                }`}>
-                  {PCR_ARROW[pcrClass]} {pcrClass}
-                </span>
+              <div className="mt-1.5">
+                <div className="flex items-baseline gap-2">
+                  <span className={`text-3xl font-bold tabular-nums leading-none ${
+                    pcrClass === "bullish" ? "text-emerald-700"
+                    : pcrClass === "bearish" ? "text-rose-700"
+                    : "text-zinc-700"
+                  }`}>
+                    {pcr.toFixed(2)}
+                  </span>
+                  <span className={`text-xs font-semibold uppercase tracking-wide ${
+                    pcrClass === "bullish" ? "text-emerald-600"
+                    : pcrClass === "bearish" ? "text-rose-600"
+                    : "text-zinc-500"
+                  }`}>
+                    {PCR_ARROW[pcrClass]} {pcrClass}
+                  </span>
+                </div>
+                {oiLastUpdated && (
+                  <p className="mt-1 text-[11px] text-zinc-400">as of {fmtIstTime(oiLastUpdated)}</p>
+                )}
               </div>
             ) : (
-              <p className="mt-2 text-sm font-medium text-zinc-700">Awaiting market data</p>
+              <div className="mt-2">
+                <p className="text-sm font-medium text-zinc-700">
+                  {marketOpen ? "Loading OI data…" : "Opens at 9:15 AM IST"}
+                </p>
+                <p className="mt-0.5 text-[11px] text-zinc-400">
+                  {marketOpen ? "Refreshes every 30 s" : "Refreshes every 5 min during session"}
+                </p>
+              </div>
             )}
           </div>
 
@@ -320,28 +360,40 @@ export function Dashboard() {
           <div className="px-5 py-4">
             <p className="text-[10px] font-bold uppercase tracking-[0.28em] text-zinc-700">Highest OI</p>
             {ceMax || peMax ? (
-              <div className="mt-1.5 flex gap-6">
-                <div className="flex items-baseline gap-1.5">
-                  <span className="text-xs font-bold text-emerald-700">CE</span>
-                  <span className="text-xl font-bold tabular-nums leading-none text-zinc-950">
-                    {fmtStrike(ceMax?.strike ?? null)}
-                  </span>
-                  {ceMax && (
-                    <span className="text-[11px] font-medium text-zinc-600">{fmtOiLakhs(ceMax.oi)}</span>
-                  )}
+              <div className="mt-1.5">
+                <div className="flex gap-6">
+                  <div className="flex items-baseline gap-1.5">
+                    <span className="text-xs font-bold text-emerald-700">CE</span>
+                    <span className="text-xl font-bold tabular-nums leading-none text-zinc-950">
+                      {fmtStrike(ceMax?.strike ?? null)}
+                    </span>
+                    {ceMax && (
+                      <span className="text-[11px] font-medium text-zinc-600">{fmtOiLakhs(ceMax.oi)}</span>
+                    )}
+                  </div>
+                  <div className="flex items-baseline gap-1.5">
+                    <span className="text-xs font-bold text-rose-700">PE</span>
+                    <span className="text-xl font-bold tabular-nums leading-none text-zinc-950">
+                      {fmtStrike(peMax?.strike ?? null)}
+                    </span>
+                    {peMax && (
+                      <span className="text-[11px] font-medium text-zinc-600">{fmtOiLakhs(peMax.oi)}</span>
+                    )}
+                  </div>
                 </div>
-                <div className="flex items-baseline gap-1.5">
-                  <span className="text-xs font-bold text-rose-700">PE</span>
-                  <span className="text-xl font-bold tabular-nums leading-none text-zinc-950">
-                    {fmtStrike(peMax?.strike ?? null)}
-                  </span>
-                  {peMax && (
-                    <span className="text-[11px] font-medium text-zinc-600">{fmtOiLakhs(peMax.oi)}</span>
-                  )}
-                </div>
+                {oiLastUpdated && (
+                  <p className="mt-1 text-[11px] text-zinc-400">as of {fmtIstTime(oiLastUpdated)}</p>
+                )}
               </div>
             ) : (
-              <p className="mt-2 text-sm font-medium text-zinc-700">Awaiting OI data</p>
+              <div className="mt-2">
+                <p className="text-sm font-medium text-zinc-700">
+                  {marketOpen ? "Loading OI data…" : "Opens at 9:15 AM IST"}
+                </p>
+                <p className="mt-0.5 text-[11px] text-zinc-400">
+                  {marketOpen ? "Refreshes every 30 s" : "Data from next session"}
+                </p>
+              </div>
             )}
           </div>
 
