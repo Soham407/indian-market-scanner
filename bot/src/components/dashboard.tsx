@@ -247,8 +247,8 @@ export function Dashboard() {
     }`;
 
   return (
-    <main className="flex min-h-dvh flex-col">
-      <div className="flex flex-1 flex-col">
+    <main>
+      <div className="flex flex-col">
 
         {/* ── Header ─────────────────────────────────────────── */}
         <header className="flex items-center justify-between border-b border-zinc-200 bg-zinc-50 px-1 py-3">
@@ -412,7 +412,7 @@ export function Dashboard() {
         )}
 
         {/* ── Chart ──────────────────────────────────────────── */}
-        <div className="flex-1 bg-white p-4 sm:p-6">
+        <div className="bg-white p-4 sm:p-6">
           {selectedSessionDate && chartVisibility.showAtm && (
             <PremiumDecayChart
               key={`${dashboardMode}-${selectedSessionDate}-atm`}
