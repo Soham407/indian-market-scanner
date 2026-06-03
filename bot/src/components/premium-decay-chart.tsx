@@ -255,69 +255,47 @@ export function PremiumDecayChart({
   const handleMouseLeave = useCallback(() => setHoverIndex(null), []);
 
   return (
-    <section className="overflow-hidden rounded-[1.5rem] border border-slate-200 bg-white/85 shadow-[0_30px_80px_-40px_rgba(15,23,42,0.45)] backdrop-blur">
-      <div className="border-b border-slate-200 px-6 py-5 sm:px-8">
-        <div className="flex flex-wrap items-start justify-between gap-4">
+    <section className="overflow-hidden rounded-xl border border-zinc-200 bg-white">
+      <div className="border-b border-zinc-100 bg-zinc-50/60 px-5 py-4">
+        <div className="flex flex-wrap items-start justify-between gap-3">
           <div>
-            <p className="text-xs font-semibold uppercase tracking-[0.28em] text-slate-500">Intraday premium decay</p>
-            <h2 className="mt-2 text-2xl font-semibold tracking-tight text-slate-950">{title}</h2>
-            <p className="mt-2 max-w-2xl text-sm leading-6 text-slate-600">{subtitle}</p>
+            <p className="text-[10px] font-semibold uppercase tracking-[0.28em] text-zinc-400">Intraday premium decay</p>
+            <h2 className="mt-1 text-base font-semibold tracking-tight text-zinc-950">{title}</h2>
           </div>
-          <div className="rounded-full border border-slate-200 bg-slate-50 px-4 py-2 text-xs font-medium text-slate-600">
-            Series: <span className="font-semibold text-slate-900">{seriesKey}</span>
-          </div>
-        </div>
-        <div className="mt-4 flex flex-wrap items-center gap-3 text-sm">
-          <span className="rounded-full bg-emerald-50 px-3 py-1 font-medium text-emerald-700">CE premium movement</span>
-          <span className="rounded-full bg-rose-50 px-3 py-1 font-medium text-rose-700">PE premium movement</span>
-          <span className="rounded-full bg-slate-100 px-3 py-1 font-medium text-slate-600">
-            {loading ? "Loading rows..." : dataState === "waiting" ? "Waiting for market data" : live ? "Realtime feed active" : "Historical session loaded"}
-          </span>
-          {latest ? (
-            <span className="rounded-full bg-slate-100 px-3 py-1 font-medium text-slate-600">
-              Last sample {formatPremiumDecayTime(latest.sampledAt)}
+          <div className="flex flex-wrap items-center gap-2">
+            <span className="flex items-center gap-1 text-xs font-medium text-emerald-700">
+              <span className="h-2 w-2 rounded-full bg-emerald-500" />CE
             </span>
-          ) : null}
+            <span className="flex items-center gap-1 text-xs font-medium text-rose-700">
+              <span className="h-2 w-2 rounded-full bg-rose-500" />PE
+            </span>
+            <span className="text-xs text-zinc-400">
+              {loading ? "Loading…" : dataState === "waiting" ? "Awaiting market data" : live ? "Live" : "Historical"}
+            </span>
+            {latest && (
+              <span className="text-xs text-zinc-400">· {formatPremiumDecayTime(latest.sampledAt)}</span>
+            )}
+          </div>
         </div>
+        {subtitle && <p className="mt-1 text-xs text-zinc-400">{subtitle}</p>}
       </div>
 
-      <div className="px-4 pb-4 pt-2 sm:px-6">
-        <div className="grid gap-3 border-b border-slate-100 pb-4 text-sm text-slate-500 sm:grid-cols-3">
-          <div>
-            <span className="block text-xs uppercase tracking-[0.2em] text-slate-400">Status</span>
-            <span className="mt-1 block font-medium text-slate-900">
-              {error ? "Feed error" : loading ? "Syncing" : live ? "Streaming" : "Historical"}
-            </span>
-          </div>
-          <div>
-            <span className="block text-xs uppercase tracking-[0.2em] text-slate-400">Strike</span>
-            <span className="mt-1 block font-medium text-slate-900">
-              {latest ? latest.strike.toLocaleString("en-IN", { maximumFractionDigits: 0 }) : "—"}
-            </span>
-          </div>
-          <div>
-            <span className="block text-xs uppercase tracking-[0.2em] text-slate-400">Underlying</span>
-            <span className="mt-1 block font-medium text-slate-900">
-              {latest ? latest.underlyingLtp.toLocaleString("en-IN", { maximumFractionDigits: 2 }) : "—"}
-            </span>
-          </div>
-        </div>
-
+      <div className="px-4 pb-4 pt-3 sm:px-5">
         {error ? (
-          <div className="rounded-2xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-900">
-            Supabase query failed: {error}
+          <div className="rounded-lg border border-amber-200 bg-amber-50 px-4 py-3 text-xs text-amber-800">
+            Feed error: {error}
           </div>
         ) : null}
 
         {dataState === "waiting" && !loading ? (
-          <div className="mt-4 flex min-h-56 items-center justify-center rounded-[1rem] border border-dashed border-slate-200 bg-slate-50/70 px-6 text-center">
+          <div className="flex min-h-52 items-center justify-center rounded-lg border border-dashed border-zinc-200 bg-zinc-50 px-6 text-center">
             <div>
-              <p className="text-sm font-semibold text-slate-700">Waiting for live market data</p>
-              <p className="mt-1 text-xs leading-5 text-slate-500">The chart will appear after the next market-hours sample arrives.</p>
+              <p className="text-sm font-semibold text-zinc-700">Awaiting market data</p>
+              <p className="mt-1 text-xs text-zinc-400">Chart appears after the first market-hours sample.</p>
             </div>
           </div>
         ) : (
-        <div ref={scrollRef} className="mt-4 overflow-x-auto rounded-[1rem] border border-slate-100 bg-gradient-to-b from-slate-50 to-white">
+        <div ref={scrollRef} className="mt-2 overflow-x-auto rounded-lg border border-zinc-100 bg-zinc-50/40">
           <svg
             ref={svgRef}
             viewBox={`0 0 ${svgWidth} ${SVG_HEIGHT}`}

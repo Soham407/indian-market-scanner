@@ -7,19 +7,14 @@ type MarqueeBannerProps = {
   ctx: MarqueeRequest;
 };
 
-const SEPARATOR = " • ";
-
 function isMarketHours(): boolean {
   const nowIst = new Date(Date.now() + 5.5 * 3600 * 1000);
-  const h = nowIst.getUTCHours();
-  const m = nowIst.getUTCMinutes();
-  const totalMin = h * 60 + m;
-  // 09:15–15:30 IST = 03:45–10:00 UTC
+  const totalMin = nowIst.getUTCHours() * 60 + nowIst.getUTCMinutes();
   return totalMin >= 3 * 60 + 45 && totalMin < 10 * 60;
 }
 
 export function MarqueeBanner({ ctx }: MarqueeBannerProps) {
-  const [messages, setMessages] = useState<string[]>(["Loading market intelligence…"]);
+  const [messages, setMessages] = useState<string[]>([]);
   const [loaded, setLoaded] = useState(false);
   const fetchedRef = useRef(false);
 
@@ -41,7 +36,7 @@ export function MarqueeBanner({ ctx }: MarqueeBannerProps) {
           }
         }
       } catch {
-        // silently keep placeholder
+        // keep empty
       } finally {
         setLoaded(true);
       }
@@ -49,34 +44,26 @@ export function MarqueeBanner({ ctx }: MarqueeBannerProps) {
   }, [ctx]);
 
   if (!isMarketHours() && !loaded) return null;
+  if (loaded && messages.length === 0) return null;
 
-  const combined = messages.join(SEPARATOR);
-  // Duplicate for seamless loop
-  const track = `${combined}${SEPARATOR}${combined}`;
+  const SEPARATOR = "  ·  ";
+  const text = messages.join(SEPARATOR);
 
   return (
-    <div className="overflow-hidden rounded-2xl border border-amber-200/80 bg-amber-50/70 px-0 py-2.5 shadow-sm backdrop-blur">
+    <div className="flex h-9 items-center overflow-hidden border-y border-amber-200/70 bg-amber-50/60">
       <div
-        className="flex whitespace-nowrap"
-        style={{
-          animation: "marquee-scroll 40s linear infinite",
-        }}
+        className="flex shrink-0 whitespace-nowrap"
+        style={{ animation: "marquee-scroll 50s linear infinite" }}
         onMouseEnter={(e) => ((e.currentTarget as HTMLDivElement).style.animationPlayState = "paused")}
         onMouseLeave={(e) => ((e.currentTarget as HTMLDivElement).style.animationPlayState = "running")}
       >
-        <span className="inline-block px-4 text-sm font-medium text-amber-900">
-          {track}
+        <span className="px-6 text-[11px] font-medium tracking-wide text-amber-800">
+          {text}{SEPARATOR}{text}
         </span>
-        <span className="inline-block px-4 text-sm font-medium text-amber-900" aria-hidden>
-          {track}
+        <span className="px-6 text-[11px] font-medium tracking-wide text-amber-800" aria-hidden>
+          {text}{SEPARATOR}{text}
         </span>
       </div>
-      <style>{`
-        @keyframes marquee-scroll {
-          0%   { transform: translateX(0); }
-          100% { transform: translateX(-50%); }
-        }
-      `}</style>
     </div>
   );
 }

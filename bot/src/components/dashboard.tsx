@@ -3,10 +3,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { BandAverageChart } from "@/components/band-average-chart";
 import { PremiumDecayChart } from "@/components/premium-decay-chart";
-import { HighestOiPanel } from "@/components/highest-oi-panel";
 import { MarqueeBanner } from "@/components/marquee-banner";
-import { NiftyYesterdayPanel } from "@/components/nifty-yesterday-panel";
-import { PcrFloatingButton } from "@/components/pcr-floating-button";
 import { getHeartbeatStatus, getPremiumDecayCollectorStatus } from "@/lib/heartbeat";
 import {
   DEFAULT_OPTIONS_DASHBOARD_MODE,
@@ -15,10 +12,18 @@ import {
   type OptionsChartMode,
   type OptionsDashboardMode,
 } from "@/lib/options-chart-ui";
+import {
+  classifyPcr,
+  computePcr,
+  getHighestOiStrike,
+  getNiftyMidValue,
+  sumOi,
+  type OiStrikeRow,
+  type PcrClassification,
+} from "@/lib/oi-analysis";
 import { filterCompletedSessionDates, toIstDateKey } from "@/lib/premium-decay";
 import { getBrowserSupabaseClient } from "@/lib/supabase-browser";
 import type { MarqueeRequest } from "@/app/api/marquee/route";
-import { classifyPcr, computePcr, getHighestOiStrike, sumOi, type OiStrikeRow } from "@/lib/oi-analysis";
 
 type BotSettingsRow = {
   last_heartbeat_at: string | null;
@@ -26,12 +31,28 @@ type BotSettingsRow = {
   premium_decay_last_error_at: string | null;
   premium_decay_last_error_message: string | null;
   nifty_previous_open: number | null;
+  nifty_previous_high: number | null;
+  nifty_previous_low: number | null;
   nifty_previous_close: number | null;
 };
 
-type PremiumDecaySessionRow = {
-  session_date: string;
-};
+type PremiumDecaySessionRow = { session_date: string };
+
+const PCR_ARROW: Record<PcrClassification, string> = { bullish: "↑", bearish: "↓", neutral: "→" };
+
+function fmtNum(val: number | null): string {
+  if (val === null) return "—";
+  return val.toLocaleString("en-IN", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+}
+
+function fmtStrike(val: number | null): string {
+  if (val === null) return "—";
+  return val.toLocaleString("en-IN", { maximumFractionDigits: 0 });
+}
+
+function fmtOiLakhs(val: number): string {
+  return `${(val / 100_000).toFixed(1)}L`;
+}
 
 function formatSessionDate(sessionDate: string): string {
   return new Date(`${sessionDate}T00:00:00+05:30`).toLocaleDateString("en-IN", {
@@ -40,12 +61,30 @@ function formatSessionDate(sessionDate: string): string {
   });
 }
 
+type StatusDotProps = { alive: boolean; standby?: boolean; label: string; sub: string };
+
+function StatusDot({ alive, standby, label, sub }: StatusDotProps) {
+  const color = standby
+    ? "bg-zinc-300"
+    : alive
+      ? "bg-emerald-500"
+      : "bg-rose-500";
+  return (
+    <div className="flex items-center gap-1.5" title={sub}>
+      <span className={`h-1.5 w-1.5 shrink-0 rounded-full ${color}`} />
+      <span className="text-xs font-medium text-zinc-600">{label}</span>
+    </div>
+  );
+}
+
 export function Dashboard() {
   const [lastHeartbeatAt, setLastHeartbeatAt] = useState<string | null>(null);
   const [premiumDecayLastSampleAt, setPremiumDecayLastSampleAt] = useState<string | null>(null);
   const [premiumDecayLastErrorAt, setPremiumDecayLastErrorAt] = useState<string | null>(null);
   const [premiumDecayLastErrorMessage, setPremiumDecayLastErrorMessage] = useState<string | null>(null);
   const [niftyPrevOpen, setNiftyPrevOpen] = useState<number | null>(null);
+  const [niftyPrevHigh, setNiftyPrevHigh] = useState<number | null>(null);
+  const [niftyPrevLow, setNiftyPrevLow] = useState<number | null>(null);
   const [niftyPrevClose, setNiftyPrevClose] = useState<number | null>(null);
   const [oiRows, setOiRows] = useState<OiStrikeRow[]>([]);
   const [now, setNow] = useState(() => new Date());
@@ -58,53 +97,52 @@ export function Dashboard() {
 
   const status = useMemo(() => getHeartbeatStatus(lastHeartbeatAt, now), [lastHeartbeatAt, now]);
   const collectorStatus = useMemo(
-    () => getPremiumDecayCollectorStatus(
-      premiumDecayLastSampleAt,
-      premiumDecayLastErrorAt,
-      premiumDecayLastErrorMessage,
-      now,
-    ),
+    () => getPremiumDecayCollectorStatus(premiumDecayLastSampleAt, premiumDecayLastErrorAt, premiumDecayLastErrorMessage, now),
     [now, premiumDecayLastErrorAt, premiumDecayLastErrorMessage, premiumDecayLastSampleAt],
   );
   const chartVisibility = getOptionsChartVisibility(chartMode);
   const liveSessionDate = toIstDateKey(now);
   const selectedSessionDate = dashboardMode === "live" ? liveSessionDate : selectedHistoricalSessionDate;
 
-  const marqueeCtx = useMemo((): MarqueeRequest => {
-    const totalCe = sumOi(oiRows, "ce");
-    const totalPe = sumOi(oiRows, "pe");
-    const pcr = computePcr(totalPe, totalCe);
-    const pcrClass = pcr !== null ? classifyPcr(pcr) : null;
-    return {
-      pcr,
-      pcrClass,
-      ceMaxOiStrike: getHighestOiStrike(oiRows, "ce")?.strike ?? null,
-      peMaxOiStrike: getHighestOiStrike(oiRows, "pe")?.strike ?? null,
-      niftyPreviousClose: niftyPrevClose,
-      niftyPreviousOpen: niftyPrevOpen,
-    };
-  }, [oiRows, niftyPrevClose, niftyPrevOpen]);
+  // PCR + OI derived values
+  const totalCeOi = useMemo(() => sumOi(oiRows, "ce"), [oiRows]);
+  const totalPeOi = useMemo(() => sumOi(oiRows, "pe"), [oiRows]);
+  const pcr = useMemo(() => computePcr(totalPeOi, totalCeOi), [totalPeOi, totalCeOi]);
+  const pcrClass = useMemo(() => (pcr !== null ? classifyPcr(pcr) : null), [pcr]);
+  const ceMax = useMemo(() => getHighestOiStrike(oiRows, "ce"), [oiRows]);
+  const peMax = useMemo(() => getHighestOiStrike(oiRows, "pe"), [oiRows]);
+  const niftyMid = niftyPrevHigh !== null && niftyPrevLow !== null
+    ? getNiftyMidValue(niftyPrevHigh, niftyPrevLow)
+    : null;
 
+  const marqueeCtx = useMemo((): MarqueeRequest => ({
+    pcr,
+    pcrClass,
+    ceMaxOiStrike: ceMax?.strike ?? null,
+    peMaxOiStrike: peMax?.strike ?? null,
+    niftyPreviousClose: niftyPrevClose,
+    niftyPreviousOpen: niftyPrevOpen,
+  }), [pcr, pcrClass, ceMax, peMax, niftyPrevClose, niftyPrevOpen]);
+
+  // Clock
   useEffect(() => {
     const interval = setInterval(() => setNow(new Date()), 1000);
     return () => clearInterval(interval);
   }, []);
 
+  // Historical sessions
   useEffect(() => {
     if (dashboardMode !== "historical") return;
-
     let isActive = true;
     const supabase = getBrowserSupabaseClient();
 
     const loadHistoricalSessions = async () => {
       setHistoryLoading(true);
       setHistoryError(null);
-
       const { data, error } = await supabase
         .from("bot_premium_decay_sessions")
         .select("session_date")
         .order("session_date", { ascending: false });
-
       if (!isActive) return;
       if (error) {
         setHistoryError(error.message);
@@ -112,32 +150,31 @@ export function Dashboard() {
         setSelectedHistoricalSessionDate(null);
       } else {
         const dates = filterCompletedSessionDates(
-          ((data ?? []) as PremiumDecaySessionRow[]).map((row) => row.session_date),
+          ((data ?? []) as PremiumDecaySessionRow[]).map((r) => r.session_date),
           new Date(),
         );
         setHistoricalSessionDates(dates);
-        setSelectedHistoricalSessionDate((current) => current && dates.includes(current) ? current : dates[0] ?? null);
+        setSelectedHistoricalSessionDate((cur) =>
+          cur && dates.includes(cur) ? cur : dates[0] ?? null,
+        );
       }
       setHistoryLoading(false);
     };
 
     void loadHistoricalSessions();
-
-    return () => {
-      isActive = false;
-    };
+    return () => { isActive = false; };
   }, [dashboardMode, liveSessionDate]);
 
+  // Bot settings + Realtime
   useEffect(() => {
     const supabase = getBrowserSupabaseClient();
 
     const load = async () => {
       const { data } = await supabase
         .from("bot_settings")
-        .select("last_heartbeat_at, premium_decay_last_sample_at, premium_decay_last_error_at, premium_decay_last_error_message, nifty_previous_open, nifty_previous_close")
+        .select("last_heartbeat_at, premium_decay_last_sample_at, premium_decay_last_error_at, premium_decay_last_error_message, nifty_previous_open, nifty_previous_high, nifty_previous_low, nifty_previous_close")
         .eq("id", 1)
         .single();
-
       if (data) {
         const row = data as BotSettingsRow;
         setLastHeartbeatAt(row.last_heartbeat_at);
@@ -145,6 +182,8 @@ export function Dashboard() {
         setPremiumDecayLastErrorAt(row.premium_decay_last_error_at);
         setPremiumDecayLastErrorMessage(row.premium_decay_last_error_message);
         setNiftyPrevOpen(row.nifty_previous_open);
+        setNiftyPrevHigh(row.nifty_previous_high);
+        setNiftyPrevLow(row.nifty_previous_low);
         setNiftyPrevClose(row.nifty_previous_close);
       }
     };
@@ -152,15 +191,8 @@ export function Dashboard() {
     void load();
 
     const channel = supabase
-      .channel("bot-settings-heartbeat")
-      .on(
-        "postgres_changes",
-        {
-          event: "UPDATE",
-          schema: "public",
-          table: "bot_settings",
-          filter: "id=eq.1",
-        },
+      .channel("bot-settings-main")
+      .on("postgres_changes", { event: "UPDATE", schema: "public", table: "bot_settings", filter: "id=eq.1" },
         (payload) => {
           const row = payload.new as BotSettingsRow;
           setLastHeartbeatAt(row.last_heartbeat_at);
@@ -168,18 +200,18 @@ export function Dashboard() {
           setPremiumDecayLastErrorAt(row.premium_decay_last_error_at);
           setPremiumDecayLastErrorMessage(row.premium_decay_last_error_message);
           setNiftyPrevOpen(row.nifty_previous_open);
+          setNiftyPrevHigh(row.nifty_previous_high);
+          setNiftyPrevLow(row.nifty_previous_low);
           setNiftyPrevClose(row.nifty_previous_close);
           setNow(new Date());
         },
       )
       .subscribe();
 
-    return () => {
-      void supabase.removeChannel(channel);
-    };
+    return () => { void supabase.removeChannel(channel); };
   }, []);
 
-  // Fetch latest OI chain snapshot for shared use by PCR button + highest OI panel
+  // OI chain polling
   useEffect(() => {
     const supabase = getBrowserSupabaseClient();
 
@@ -201,9 +233,7 @@ export function Dashboard() {
         .select("strike, ce_oi, pe_oi")
         .eq("sampled_at", sampled_at);
 
-      if (data) {
-        setOiRows((data as OiStrikeRow[]).map((r) => ({ strike: r.strike, ce_oi: r.ce_oi, pe_oi: r.pe_oi })));
-      }
+      if (data) setOiRows((data as OiStrikeRow[]).map((r) => ({ strike: r.strike, ce_oi: r.ce_oi, pe_oi: r.pe_oi })));
     };
 
     void loadOi();
@@ -211,178 +241,210 @@ export function Dashboard() {
     return () => clearInterval(interval);
   }, []);
 
+  const tabBtn = (active: boolean) =>
+    `px-3 py-1.5 rounded-md text-xs font-semibold transition-colors ${
+      active ? "bg-zinc-900 text-white" : "text-zinc-500 hover:text-zinc-800 hover:bg-zinc-100"
+    }`;
+
   return (
-    <>
-    <main className="min-h-screen bg-[radial-gradient(circle_at_top_left,_rgba(16,185,129,0.12),_transparent_35%),linear-gradient(180deg,_#f8fafc_0%,_#eef2ff_100%)] text-slate-900">
-      <div className="mx-auto flex w-full max-w-7xl flex-col gap-6 px-4 py-6 sm:px-6 lg:px-8">
-        <header className="flex flex-col gap-3 rounded-[1.5rem] border border-white/60 bg-white/70 px-6 py-5 shadow-[0_20px_60px_-35px_rgba(15,23,42,0.5)] backdrop-blur sm:flex-row sm:items-center sm:justify-between">
-          <div>
-            <p className="text-xs font-semibold uppercase tracking-[0.3em] text-slate-500">Indian Market Scanner</p>
-            <h1 className="mt-2 text-3xl font-semibold tracking-tight text-slate-950">Premium decay control room</h1>
-            <p className="mt-2 max-w-2xl text-sm leading-6 text-slate-600">
-              Live CE/PE decay streamed from Supabase and rendered as a mirrored intraday area chart for options monitoring.
-            </p>
+    <main className="min-h-dvh">
+      <div className="mx-auto flex w-full max-w-7xl flex-col gap-0 px-4 sm:px-6 lg:px-8">
+
+        {/* ── Header ─────────────────────────────────────────── */}
+        <header className="flex items-center justify-between border-b border-zinc-200 bg-zinc-50 px-1 py-3">
+          <div className="flex items-center gap-2.5">
+            <span className="text-[10px] font-semibold uppercase tracking-[0.32em] text-zinc-400">
+              Indian Market Scanner
+            </span>
+            <span className="text-zinc-300" aria-hidden>·</span>
+            <h1 className="text-sm font-semibold text-zinc-900">NIFTY Options Dashboard</h1>
           </div>
-          <div className="flex flex-col gap-3 sm:flex-row">
-            <div
-              className={`rounded-2xl border px-4 py-3 shadow-sm ${
-                status.label === "STANDBY"
-                  ? "border-slate-200 bg-slate-50"
-                  : status.isAlive ? "border-emerald-200 bg-emerald-50" : "border-rose-200 bg-rose-50"
-              }`}
-            >
-              <p className="text-xs font-semibold uppercase tracking-[0.25em] text-slate-500">Bot heartbeat</p>
-              <p className="mt-1 text-lg font-semibold text-slate-950">
-                <span className={status.label === "STANDBY" ? "text-slate-700" : status.isAlive ? "text-emerald-700" : "text-rose-700"}>
-                  {status.label}
-                </span>
-              </p>
-              <p className="text-sm text-slate-600">Last update: {status.message}</p>
-            </div>
-            <div
-              className={`rounded-2xl border px-4 py-3 shadow-sm ${
-                collectorStatus.label === "ACTIVE"
-                  ? "border-emerald-200 bg-emerald-50"
-                  : collectorStatus.label === "STANDBY"
-                    ? "border-slate-200 bg-slate-50"
-                    : "border-rose-200 bg-rose-50"
-              }`}
-            >
-              <p className="text-xs font-semibold uppercase tracking-[0.25em] text-slate-500">Options collector</p>
-              <p className="mt-1 text-lg font-semibold text-slate-950">
-                <span className={
-                  collectorStatus.label === "ACTIVE"
-                    ? "text-emerald-700"
-                    : collectorStatus.label === "STANDBY" ? "text-slate-700" : "text-rose-700"
-                }>
-                  {collectorStatus.label}
-                </span>
-              </p>
-              <p className="max-w-64 truncate text-sm text-slate-600" title={collectorStatus.message}>
-                Last update: {collectorStatus.message}
-              </p>
-            </div>
+          <div className="flex items-center gap-4">
+            <StatusDot
+              alive={status.isAlive}
+              standby={status.label === "STANDBY"}
+              label="Bot"
+              sub={status.message}
+            />
+            <StatusDot
+              alive={collectorStatus.label === "ACTIVE"}
+              standby={collectorStatus.label === "STANDBY"}
+              label="Collector"
+              sub={collectorStatus.message}
+            />
             <button
               type="button"
               onClick={() => {
                 const supabase = getBrowserSupabaseClient();
-                void supabase.auth.signOut().then(() => {
-                  window.location.href = "/login";
-                });
+                void supabase.auth.signOut().then(() => { window.location.href = "/login"; });
               }}
-              className="self-start rounded-xl border border-slate-200 bg-white px-4 py-2 text-sm font-semibold text-slate-700 shadow-sm transition hover:bg-slate-50 sm:self-center"
+              className="text-xs font-medium text-zinc-400 transition-colors hover:text-zinc-700"
             >
               Sign out
             </button>
           </div>
         </header>
 
+        {/* ── Marquee ────────────────────────────────────────── */}
         <MarqueeBanner ctx={marqueeCtx} />
 
-        <NiftyYesterdayPanel />
+        {/* ── Market data panel ──────────────────────────────── */}
+        <div className="grid grid-cols-1 divide-y divide-zinc-200 border-b border-zinc-200 bg-white sm:grid-cols-3 sm:divide-x sm:divide-y-0">
 
-        <div className="flex flex-wrap gap-4">
-          <div className="flex-1">
-            <HighestOiPanel rows={oiRows} />
+          {/* PCR */}
+          <div className="px-5 py-4">
+            <p className="text-[10px] font-semibold uppercase tracking-[0.28em] text-zinc-400">PCR</p>
+            {pcr !== null && pcrClass !== null ? (
+              <div className="mt-1.5 flex items-baseline gap-2">
+                <span className={`text-3xl font-bold tabular-nums leading-none ${
+                  pcrClass === "bullish" ? "text-emerald-700"
+                  : pcrClass === "bearish" ? "text-rose-700"
+                  : "text-zinc-700"
+                }`}>
+                  {pcr.toFixed(2)}
+                </span>
+                <span className={`text-xs font-semibold uppercase tracking-wide ${
+                  pcrClass === "bullish" ? "text-emerald-600"
+                  : pcrClass === "bearish" ? "text-rose-600"
+                  : "text-zinc-500"
+                }`}>
+                  {PCR_ARROW[pcrClass]} {pcrClass}
+                </span>
+              </div>
+            ) : (
+              <p className="mt-2 text-sm text-zinc-400">Awaiting market data</p>
+            )}
+          </div>
+
+          {/* Highest OI */}
+          <div className="px-5 py-4">
+            <p className="text-[10px] font-semibold uppercase tracking-[0.28em] text-zinc-400">Highest OI</p>
+            {ceMax || peMax ? (
+              <div className="mt-1.5 flex gap-6">
+                <div className="flex items-baseline gap-1.5">
+                  <span className="text-xs font-bold text-emerald-700">CE</span>
+                  <span className="text-xl font-bold tabular-nums leading-none text-zinc-950">
+                    {fmtStrike(ceMax?.strike ?? null)}
+                  </span>
+                  {ceMax && (
+                    <span className="text-[11px] text-zinc-400">{fmtOiLakhs(ceMax.oi)}</span>
+                  )}
+                </div>
+                <div className="flex items-baseline gap-1.5">
+                  <span className="text-xs font-bold text-rose-700">PE</span>
+                  <span className="text-xl font-bold tabular-nums leading-none text-zinc-950">
+                    {fmtStrike(peMax?.strike ?? null)}
+                  </span>
+                  {peMax && (
+                    <span className="text-[11px] text-zinc-400">{fmtOiLakhs(peMax.oi)}</span>
+                  )}
+                </div>
+              </div>
+            ) : (
+              <p className="mt-2 text-sm text-zinc-400">Awaiting OI data</p>
+            )}
+          </div>
+
+          {/* Nifty yesterday */}
+          <div className="px-5 py-4">
+            <p className="text-[10px] font-semibold uppercase tracking-[0.28em] text-zinc-400">Nifty Yesterday</p>
+            <div className="mt-1.5 flex flex-wrap items-baseline gap-x-4 gap-y-1">
+              {(
+                [
+                  { label: "O", value: fmtNum(niftyPrevOpen), color: "text-zinc-900" },
+                  { label: "H", value: fmtNum(niftyPrevHigh), color: "text-emerald-700" },
+                  { label: "L", value: fmtNum(niftyPrevLow), color: "text-rose-700" },
+                  { label: "C", value: fmtNum(niftyPrevClose), color: "text-zinc-900" },
+                  { label: "Mid", value: fmtNum(niftyMid), color: "text-violet-700" },
+                ] as const
+              ).map(({ label, value, color }) => (
+                <span key={label} className="text-xs text-zinc-400">
+                  {label}{" "}
+                  <strong className={`font-semibold tabular-nums ${color}`}>{value}</strong>
+                </span>
+              ))}
+            </div>
+          </div>
+
+        </div>
+
+        {/* ── Chart controls ─────────────────────────────────── */}
+        <div className="flex flex-wrap items-center justify-between gap-3 border-b border-zinc-200 bg-white px-5 py-3">
+          <div className="flex items-center gap-1 rounded-lg border border-zinc-200 bg-zinc-50 p-1">
+            <button type="button" aria-pressed={dashboardMode === "live"} onClick={() => setDashboardMode("live")} className={tabBtn(dashboardMode === "live")}>
+              Live
+            </button>
+            <button type="button" aria-pressed={dashboardMode === "historical"} onClick={() => setDashboardMode("historical")} className={tabBtn(dashboardMode === "historical")}>
+              Historical
+            </button>
+          </div>
+          <div className="flex items-center gap-1 rounded-lg border border-zinc-200 bg-zinc-50 p-1">
+            <button type="button" aria-pressed={chartMode === "atm"} onClick={() => setChartMode("atm")} className={tabBtn(chartMode === "atm")}>
+              ATM decay
+            </button>
+            <button type="button" aria-pressed={chartMode === "band-average"} onClick={() => setChartMode("band-average")} className={tabBtn(chartMode === "band-average")}>
+              Band avg
+            </button>
           </div>
         </div>
 
-        <div className="flex flex-wrap gap-2 rounded-2xl border border-white/60 bg-white/70 p-2 shadow-sm backdrop-blur">
-          <button
-            type="button"
-            aria-pressed={dashboardMode === "live"}
-            onClick={() => setDashboardMode("live")}
-            className={`rounded-xl px-4 py-2 text-sm font-semibold transition ${
-              dashboardMode === "live" ? "bg-slate-950 text-white shadow-sm" : "text-slate-600 hover:bg-white hover:text-slate-950"
-            }`}
-          >
-            Live
-          </button>
-          <button
-            type="button"
-            aria-pressed={dashboardMode === "historical"}
-            onClick={() => setDashboardMode("historical")}
-            className={`rounded-xl px-4 py-2 text-sm font-semibold transition ${
-              dashboardMode === "historical" ? "bg-slate-950 text-white shadow-sm" : "text-slate-600 hover:bg-white hover:text-slate-950"
-            }`}
-          >
-            Historical
-          </button>
-        </div>
-
-        {dashboardMode === "historical" ? (
-          <div className="flex flex-wrap items-center gap-3 rounded-2xl border border-white/60 bg-white/70 px-4 py-3 shadow-sm backdrop-blur">
-            <label htmlFor="historical-session" className="text-sm font-semibold text-slate-700">Session date</label>
+        {/* Historical session picker */}
+        {dashboardMode === "historical" && (
+          <div className="flex flex-wrap items-center gap-3 border-b border-zinc-200 bg-white px-5 py-3">
+            <label htmlFor="historical-session" className="text-xs font-semibold text-zinc-600">
+              Session
+            </label>
             <select
               id="historical-session"
               value={selectedHistoricalSessionDate ?? ""}
-              onChange={(event) => setSelectedHistoricalSessionDate(event.target.value || null)}
+              onChange={(e) => setSelectedHistoricalSessionDate(e.target.value || null)}
               disabled={historyLoading || historicalSessionDates.length === 0}
-              className="rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm font-medium text-slate-800 shadow-sm disabled:cursor-not-allowed disabled:text-slate-400"
+              className="rounded-md border border-zinc-200 bg-white px-3 py-1.5 text-xs font-medium text-zinc-800 shadow-sm focus:outline-none focus:ring-2 focus:ring-zinc-900 disabled:cursor-not-allowed disabled:text-zinc-400"
             >
-              {historicalSessionDates.length === 0 ? <option value="">No completed sessions</option> : null}
-              {historicalSessionDates.map((sessionDate) => (
-                <option key={sessionDate} value={sessionDate}>{formatSessionDate(sessionDate)}</option>
+              {historicalSessionDates.length === 0 && <option value="">No completed sessions</option>}
+              {historicalSessionDates.map((d) => (
+                <option key={d} value={d}>{formatSessionDate(d)}</option>
               ))}
             </select>
-            {historyLoading ? <span className="text-sm text-slate-500">Loading sessions...</span> : null}
-            {historyError ? <span className="text-sm text-amber-800">Could not load history: {historyError}</span> : null}
+            {historyLoading && <span className="text-xs text-zinc-400">Loading…</span>}
+            {historyError && <span className="text-xs text-amber-700">Could not load history: {historyError}</span>}
           </div>
-        ) : null}
+        )}
 
-        <div className="flex flex-wrap gap-2 rounded-2xl border border-white/60 bg-white/70 p-2 shadow-sm backdrop-blur">
-          <button
-            type="button"
-            aria-pressed={chartMode === "atm"}
-            onClick={() => setChartMode("atm")}
-            className={`rounded-xl px-4 py-2 text-sm font-semibold transition ${
-              chartMode === "atm" ? "bg-slate-950 text-white shadow-sm" : "text-slate-600 hover:bg-white hover:text-slate-950"
-            }`}
-          >
-            ATM premium decay
-          </button>
-          <button
-            type="button"
-            aria-pressed={chartMode === "band-average"}
-            onClick={() => setChartMode("band-average")}
-            className={`rounded-xl px-4 py-2 text-sm font-semibold transition ${
-              chartMode === "band-average" ? "bg-slate-950 text-white shadow-sm" : "text-slate-600 hover:bg-white hover:text-slate-950"
-            }`}
-          >
-            Band average
-          </button>
-        </div>
-
-        <div>
-          {selectedSessionDate && chartVisibility.showAtm ? (
+        {/* ── Chart ──────────────────────────────────────────── */}
+        <div className="bg-white p-4 sm:p-6">
+          {selectedSessionDate && chartVisibility.showAtm && (
             <PremiumDecayChart
               key={`${dashboardMode}-${selectedSessionDate}-atm`}
               seriesKey="NIFTY-ATM-WEEKLY"
               sessionDate={selectedSessionDate}
               live={dashboardMode === "live"}
-              title={dashboardMode === "live" ? "NIFTY premium decay" : `NIFTY premium decay - ${formatSessionDate(selectedSessionDate)}`}
+              title={dashboardMode === "live" ? "NIFTY ATM premium decay" : `ATM decay — ${formatSessionDate(selectedSessionDate)}`}
               subtitle={dashboardMode === "live"
-                ? "Signed CE and PE premium movement from the session baseline, streamed live from Supabase."
-                : "Completed intraday CE and PE premium movement from the selected historical session."}
+                ? "CE and PE movement from session baseline, streamed live."
+                : "Completed intraday CE and PE movement for the selected session."}
             />
-          ) : null}
-          {selectedSessionDate && chartVisibility.showBandAverage ? (
+          )}
+          {selectedSessionDate && chartVisibility.showBandAverage && (
             <BandAverageChart
               key={`${dashboardMode}-${selectedSessionDate}-band`}
               sessionDate={selectedSessionDate}
               live={dashboardMode === "live"}
             />
-          ) : null}
-          {dashboardMode === "historical" && !historyLoading && !historyError && !selectedHistoricalSessionDate ? (
-            <section className="rounded-[1.5rem] border border-dashed border-slate-200 bg-white/75 px-6 py-16 text-center shadow-sm backdrop-blur">
-              <p className="text-sm font-semibold text-slate-700">No completed historical sessions yet</p>
-              <p className="mt-2 text-sm text-slate-500">Today&apos;s graph will appear here after the 00:00 IST rollover.</p>
-            </section>
-          ) : null}
+          )}
+          {dashboardMode === "historical" && !historyLoading && !historyError && !selectedHistoricalSessionDate && (
+            <div className="flex min-h-56 items-center justify-center rounded-lg border border-dashed border-zinc-200 px-6 text-center">
+              <div>
+                <p className="text-sm font-semibold text-zinc-700">No completed sessions yet</p>
+                <p className="mt-1 text-xs text-zinc-400">
+                  Today&apos;s session will appear after the 00:00 IST rollover.
+                </p>
+              </div>
+            </div>
+          )}
         </div>
+
       </div>
     </main>
-    <PcrFloatingButton rows={oiRows} />
-    </>
   );
 }
