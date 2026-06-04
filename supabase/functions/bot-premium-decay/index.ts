@@ -421,6 +421,18 @@ Deno.serve(async () => {
       );
     }
 
+    // Update live NIFTY spot and collector heartbeat in bot_settings.
+    // premium-decay runs every minute so this keeps nifty_current_ltp fresh.
+    await supabase
+      .from("bot_settings")
+      .update({
+        nifty_current_ltp: underlyingLtp,
+        premium_decay_last_sample_at: sampledAt.toISOString(),
+        premium_decay_last_error_at: null,
+        premium_decay_last_error_message: null,
+      })
+      .eq("id", 1);
+
     return Response.json({
       ok: true,
       point,
