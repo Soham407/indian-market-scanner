@@ -98,6 +98,8 @@ export function Dashboard() {
   const [selectedHistoricalSessionDate, setSelectedHistoricalSessionDate] = useState<string | null>(null);
   const [historyLoading, setHistoryLoading] = useState(false);
   const [historyError, setHistoryError] = useState<string | null>(null);
+  const [selectedStrike, setSelectedStrike] = useState<number | null>(null);
+  const [showAllStrikes, setShowAllStrikes] = useState(false);
 
   const status = useMemo(() => getHeartbeatStatus(lastHeartbeatAt, now), [lastHeartbeatAt, now]);
   const collectorStatus = useMemo(
@@ -120,6 +122,24 @@ export function Dashboard() {
     : null;
 
   const marketOpen = useMemo(() => isNseMarketOpen(now), [now]);
+
+  const atmStrike = useMemo(() => {
+    const ref = niftyCurrentLtp ?? niftyPrevClose;
+    if (ref === null) return null;
+    return Math.round(ref / 50) * 50;
+  }, [niftyCurrentLtp, niftyPrevClose]);
+
+  const sortedOiRows = useMemo(() =>
+    [...oiRows].sort((a, b) => a.strike - b.strike),
+    [oiRows],
+  );
+
+  const nearAtmRows = useMemo(() => {
+    if (atmStrike === null) return sortedOiRows;
+    return sortedOiRows.filter((r) => Math.abs(r.strike - atmStrike) <= 250);
+  }, [sortedOiRows, atmStrike]);
+
+  const visibleOiRows = showAllStrikes ? sortedOiRows : nearAtmRows;
 
   const marqueeCtx = useMemo((): MarqueeRequest => ({
     pcr,
@@ -461,6 +481,83 @@ export function Dashboard() {
           </div>
         </div>
 
+        {/* ── OI Chain table ─────────────────────────────────── */}
+        {oiRows.length > 0 && (
+          <div className="border-b border-zinc-200 bg-white px-5 py-3">
+            <div className="flex items-center justify-between gap-3 mb-2">
+              <p className="text-[10px] font-bold uppercase tracking-[0.28em] text-zinc-700">
+                OI Chain
+                {oiLastUpdated && (
+                  <span className="ml-2 font-normal normal-case tracking-normal text-zinc-400">
+                    as of {fmtIstTime(oiLastUpdated)}
+                  </span>
+                )}
+              </p>
+              <div className="flex items-center gap-2">
+                {selectedStrike !== null && (
+                  <button
+                    type="button"
+                    onClick={() => setSelectedStrike(null)}
+                    className="text-[10px] font-semibold text-violet-700 hover:text-violet-900 underline"
+                  >
+                    Clear ({selectedStrike.toLocaleString("en-IN")})
+                  </button>
+                )}
+                <button
+                  type="button"
+                  onClick={() => setShowAllStrikes((v) => !v)}
+                  className="text-[10px] font-semibold text-zinc-500 hover:text-zinc-800"
+                >
+                  {showAllStrikes ? "Near ATM" : `All (${sortedOiRows.length})`}
+                </button>
+              </div>
+            </div>
+            <div className="overflow-x-auto max-h-48 overflow-y-auto">
+              <table className="w-full min-w-[340px] text-xs">
+                <thead>
+                  <tr className="text-[10px] font-bold uppercase tracking-wide text-zinc-500">
+                    <th className="pb-1 pr-3 text-right text-emerald-700">CE OI</th>
+                    <th className="pb-1 px-3 text-center">Strike</th>
+                    <th className="pb-1 pl-3 text-left text-rose-700">PE OI</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {visibleOiRows.map((row) => {
+                    const isAtm = atmStrike !== null && row.strike === atmStrike;
+                    const isSelected = selectedStrike === row.strike;
+                    const rowBg = isSelected
+                      ? "bg-violet-50 ring-1 ring-violet-400"
+                      : isAtm
+                        ? "bg-amber-50"
+                        : "hover:bg-zinc-50";
+                    return (
+                      <tr
+                        key={row.strike}
+                        className={`cursor-pointer rounded transition-colors ${rowBg}`}
+                        onClick={() => {
+                          if (chartMode !== "atm") setChartMode("atm");
+                          setSelectedStrike((cur) => cur === row.strike ? null : row.strike);
+                        }}
+                      >
+                        <td className="py-0.5 pr-3 text-right font-semibold tabular-nums text-emerald-700">
+                          {fmtOiLakhs(row.ce_oi)}
+                        </td>
+                        <td className={`py-0.5 px-3 text-center font-bold tabular-nums ${isAtm ? "text-amber-700" : isSelected ? "text-violet-800" : "text-zinc-900"}`}>
+                          {row.strike.toLocaleString("en-IN", { maximumFractionDigits: 0 })}
+                          {isAtm && <span className="ml-1 text-[9px] font-bold text-amber-500">ATM</span>}
+                        </td>
+                        <td className="py-0.5 pl-3 text-left font-semibold tabular-nums text-rose-700">
+                          {fmtOiLakhs(row.pe_oi)}
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        )}
+
         {/* Historical session picker */}
         {dashboardMode === "historical" && (
           <div className="flex flex-wrap items-center gap-3 border-b border-zinc-200 bg-white px-5 py-3">
@@ -488,14 +585,19 @@ export function Dashboard() {
         <div className="bg-white p-4 sm:p-6">
           {selectedSessionDate && chartVisibility.showAtm && (
             <PremiumDecayChart
-              key={`${dashboardMode}-${selectedSessionDate}-atm`}
+              key={`${dashboardMode}-${selectedSessionDate}-atm-${selectedStrike ?? "default"}`}
               seriesKey="NIFTY-ATM-WEEKLY"
               sessionDate={selectedSessionDate}
               live={dashboardMode === "live"}
+              overrideStrike={selectedStrike}
               title={dashboardMode === "live" ? "NIFTY ATM premium decay" : `ATM decay — ${formatSessionDate(selectedSessionDate)}`}
-              subtitle={dashboardMode === "live"
-                ? "CE and PE movement from session baseline, streamed live."
-                : "Completed intraday CE and PE movement for the selected session."}
+              subtitle={
+                selectedStrike != null
+                  ? `Strike ${selectedStrike.toLocaleString("en-IN")} — CE and PE premium decay from session baseline.`
+                  : dashboardMode === "live"
+                    ? "CE and PE movement from session baseline, streamed live."
+                    : "Completed intraday CE and PE movement for the selected session."
+              }
             />
           )}
           {selectedSessionDate && chartVisibility.showBandAverage && (

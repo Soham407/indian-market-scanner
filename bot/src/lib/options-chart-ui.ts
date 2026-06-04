@@ -1,6 +1,9 @@
 export type OptionsDashboardMode = "live" | "historical";
 export type OptionsChartMode = "atm" | "band-average";
 
+export const PREMIUM_DECAY_ATM_SERIES_KEY = "NIFTY-ATM-WEEKLY";
+export const PREMIUM_DECAY_BAND_SERIES_KEY = "NIFTY-BAND-WEEKLY";
+
 export const DEFAULT_OPTIONS_DASHBOARD_MODE: OptionsDashboardMode = "live";
 export const DEFAULT_OPTIONS_CHART_MODE: OptionsChartMode = "band-average";
 export const NSE_SESSION_MINUTE_COUNT = 376;
