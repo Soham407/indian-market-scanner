@@ -24,3 +24,8 @@ body {
   0%   { transform: translateX(0); }
   100% { transform: translateX(-50%); }
 }
+
+@keyframes flashIn {
+  0%   { background-color: rgb(209 250 229); }
+  100% { background-color: transparent; }
+}

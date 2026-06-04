@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { BandAverageChart } from "@/components/band-average-chart";
 import { PremiumDecayChart } from "@/components/premium-decay-chart";
 import { MarqueeBanner } from "@/components/marquee-banner";
@@ -65,6 +65,24 @@ function formatSessionDate(sessionDate: string): string {
 
 type StatusDotProps = { alive: boolean; standby?: boolean; label: string; sub: string };
 
+function getMarketCountdown(now: Date): string {
+  const ist = new Date(now.getTime() + 5.5 * 3_600_000);
+  const h = ist.getUTCHours();
+  const m = ist.getUTCMinutes();
+  const totalMin = h * 60 + m;
+  const openMin = 9 * 60 + 15;
+  const closeMin = 15 * 60 + 30;
+  if (totalMin < openMin) {
+    const diff = openMin - totalMin;
+    return `Opens in ${Math.floor(diff / 60)}h ${diff % 60}m`;
+  }
+  if (totalMin < closeMin) {
+    const diff = closeMin - totalMin;
+    return diff < 60 ? `Closes in ${diff}m` : `Closes in ${Math.floor(diff / 60)}h ${diff % 60}m`;
+  }
+  return "Session ended";
+}
+
 function StatusDot({ alive, standby, label, sub }: StatusDotProps) {
   const color = standby
     ? "bg-zinc-400"
@@ -100,6 +118,10 @@ export function Dashboard() {
   const [historyError, setHistoryError] = useState<string | null>(null);
   const [selectedStrike, setSelectedStrike] = useState<number | null>(null);
   const [showAllStrikes, setShowAllStrikes] = useState(false);
+  const [showSpot, setShowSpot] = useState(false);
+  const [showOiOverlay, setShowOiOverlay] = useState(false);
+  const [ltpFlash, setLtpFlash] = useState(0);
+  const lastOiSampledAtRef = useRef<string | null>(null);
 
   const status = useMemo(() => getHeartbeatStatus(lastHeartbeatAt, now), [lastHeartbeatAt, now]);
   const collectorStatus = useMemo(
@@ -140,6 +162,9 @@ export function Dashboard() {
   }, [sortedOiRows, atmStrike]);
 
   const visibleOiRows = showAllStrikes ? sortedOiRows : nearAtmRows;
+
+  const maxCeOi = useMemo(() => Math.max(1, ...visibleOiRows.map((r) => r.ce_oi)), [visibleOiRows]);
+  const maxPeOi = useMemo(() => Math.max(1, ...visibleOiRows.map((r) => r.pe_oi)), [visibleOiRows]);
 
   const marqueeCtx = useMemo((): MarqueeRequest => ({
     pcr,
@@ -231,6 +256,7 @@ export function Dashboard() {
           setNiftyPrevLow(row.nifty_previous_low);
           setNiftyPrevClose(row.nifty_previous_close);
           setNiftyCurrentLtp(row.nifty_current_ltp);
+          setLtpFlash((f) => f + 1);
           setNow(new Date());
         },
       )
@@ -256,6 +282,8 @@ export function Dashboard() {
       if (!latestRow) return;
       const { sampled_at } = latestRow as { sampled_at: string };
 
+      if (sampled_at === lastOiSampledAtRef.current) return;
+
       const { data } = await supabase
         .from("bot_nifty_oi_chain")
         .select("strike, ce_oi, pe_oi")
@@ -264,6 +292,7 @@ export function Dashboard() {
       if (data) {
         setOiRows((data as OiStrikeRow[]).map((r) => ({ strike: r.strike, ce_oi: r.ce_oi, pe_oi: r.pe_oi })));
         setOiLastUpdated(new Date());
+        lastOiSampledAtRef.current = sampled_at;
       }
     };
 
@@ -310,7 +339,7 @@ export function Dashboard() {
                 : "bg-zinc-100 text-zinc-500 ring-1 ring-zinc-200"
             }`}>
               <span className={`h-1.5 w-1.5 rounded-full ${marketOpen ? "animate-pulse bg-emerald-500" : "bg-zinc-400"}`} />
-              {marketOpen ? "MARKET OPEN" : "MARKET CLOSED"}
+              {marketOpen ? "MARKET OPEN" : getMarketCountdown(now)}
             </span>
             <StatusDot
               alive={status.isAlive}
@@ -369,13 +398,15 @@ export function Dashboard() {
                 )}
               </div>
             ) : (
-              <div className="mt-2">
-                <p className="text-sm font-medium text-zinc-700">
-                  {marketOpen ? "Loading OI data…" : "Opens at 9:15 AM IST"}
-                </p>
-                <p className="mt-0.5 text-[11px] text-zinc-400">
-                  {marketOpen ? "Refreshes every 30 s" : "Refreshes every 5 min during session"}
-                </p>
+              <div className="mt-2 space-y-2">
+                {marketOpen ? (
+                  <>
+                    <div className="h-8 w-20 animate-pulse rounded-md bg-zinc-100" />
+                    <div className="h-3 w-28 animate-pulse rounded bg-zinc-100" />
+                  </>
+                ) : (
+                  <p className="text-sm font-medium text-zinc-500">Opens at 9:15 AM IST</p>
+                )}
               </div>
             )}
           </div>
@@ -410,13 +441,15 @@ export function Dashboard() {
                 )}
               </div>
             ) : (
-              <div className="mt-2">
-                <p className="text-sm font-medium text-zinc-700">
-                  {marketOpen ? "Loading OI data…" : "Opens at 9:15 AM IST"}
-                </p>
-                <p className="mt-0.5 text-[11px] text-zinc-400">
-                  {marketOpen ? "Refreshes every 30 s" : "Data from next session"}
-                </p>
+              <div className="mt-2 space-y-2">
+                {marketOpen ? (
+                  <>
+                    <div className="h-6 w-36 animate-pulse rounded-md bg-zinc-100" />
+                    <div className="h-3 w-24 animate-pulse rounded bg-zinc-100" />
+                  </>
+                ) : (
+                  <p className="text-sm font-medium text-zinc-500">Opens at 9:15 AM IST</p>
+                )}
               </div>
             )}
           </div>
@@ -427,7 +460,7 @@ export function Dashboard() {
               <div>
                 <p className="text-[10px] font-bold uppercase tracking-[0.28em] text-zinc-700">Nifty 50</p>
                 {niftyCurrentLtp !== null ? (
-                  <p className="mt-1 text-2xl font-bold tabular-nums leading-none text-zinc-950">
+                  <p key={ltpFlash} className="mt-1 rounded-sm text-2xl font-bold tabular-nums leading-none text-zinc-950 animate-[flashIn_0.5s_ease-out]">
                     {niftyCurrentLtp.toLocaleString("en-IN", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
                   </p>
                 ) : (
@@ -566,15 +599,23 @@ export function Dashboard() {
                             setSelectedStrike((cur) => cur === row.strike ? null : row.strike);
                           }}
                         >
-                          <td className="py-0.5 pl-2 text-left text-[11px] font-semibold tabular-nums text-emerald-700">
-                            {fmtOiLakhs(row.ce_oi)}
+                          <td className="relative py-0.5 pl-2 text-left text-[11px] font-semibold tabular-nums text-emerald-700">
+                            <div
+                              className="absolute inset-y-0 left-0 bg-emerald-50 transition-all duration-300"
+                              style={{ width: `${(row.ce_oi / maxCeOi) * 100}%` }}
+                            />
+                            <span className="relative">{fmtOiLakhs(row.ce_oi)}</span>
                           </td>
                           <td className={`py-0.5 text-center text-[11px] font-bold tabular-nums ${isAtm ? "text-amber-700" : isSelected ? "text-violet-800" : "text-zinc-900"}`}>
                             {row.strike.toLocaleString("en-IN", { maximumFractionDigits: 0 })}
                             {isAtm && <span className="block text-[8px] font-bold text-amber-500 leading-none">ATM</span>}
                           </td>
-                          <td className="py-0.5 pr-2 text-right text-[11px] font-semibold tabular-nums text-rose-700">
-                            {fmtOiLakhs(row.pe_oi)}
+                          <td className="relative py-0.5 pr-2 text-right text-[11px] font-semibold tabular-nums text-rose-700">
+                            <div
+                              className="absolute inset-y-0 right-0 bg-rose-50 transition-all duration-300"
+                              style={{ width: `${(row.pe_oi / maxPeOi) * 100}%` }}
+                            />
+                            <span className="relative">{fmtOiLakhs(row.pe_oi)}</span>
                           </td>
                         </tr>
                       );
@@ -602,6 +643,10 @@ export function Dashboard() {
                       ? "CE and PE movement from session baseline, streamed live."
                       : "Completed intraday CE and PE movement for the selected session."
                 }
+                showSpot={showSpot}
+                showOiOverlay={showOiOverlay}
+                onToggleSpot={() => setShowSpot((v) => !v)}
+                onToggleOiOverlay={() => setShowOiOverlay((v) => !v)}
               />
             )}
             {selectedSessionDate && chartVisibility.showBandAverage && (
@@ -609,6 +654,10 @@ export function Dashboard() {
                 key={`${dashboardMode}-${selectedSessionDate}-band`}
                 sessionDate={selectedSessionDate}
                 live={dashboardMode === "live"}
+                showSpot={showSpot}
+                showOiOverlay={showOiOverlay}
+                onToggleSpot={() => setShowSpot((v) => !v)}
+                onToggleOiOverlay={() => setShowOiOverlay((v) => !v)}
               />
             )}
             {dashboardMode === "historical" && !historyLoading && !historyError && !selectedHistoricalSessionDate && (

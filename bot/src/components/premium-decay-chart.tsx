@@ -34,6 +34,10 @@ type PremiumDecayChartProps = {
   subtitle?: string;
   maxPoints?: number;
   overrideStrike?: number | null;
+  showSpot: boolean;
+  showOiOverlay: boolean;
+  onToggleSpot: () => void;
+  onToggleOiOverlay: () => void;
 };
 
 type ChartMetrics = {
@@ -154,13 +158,15 @@ export function PremiumDecayChart({
   subtitle = "Live CE and PE decay streamed from Supabase",
   maxPoints = NSE_SESSION_MINUTE_COUNT,
   overrideStrike = null,
+  showSpot,
+  showOiOverlay,
+  onToggleSpot,
+  onToggleOiOverlay,
 }: PremiumDecayChartProps) {
   const [rows, setRows] = useState<PremiumDecayRow[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [hoverIndex, setHoverIndex] = useState<number | null>(null);
-  const [showSpot, setShowSpot] = useState(false);
-  const [showOiOverlay, setShowOiOverlay] = useState(false);
   const [oiRawData, setOiRawData] = useState<OiSnapshot[]>([]);
   const svgRef = useRef<SVGSVGElement>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
@@ -436,7 +442,7 @@ export function PremiumDecayChart({
             {/* Spot toggle */}
             <button
               type="button"
-              onClick={() => setShowSpot((v) => !v)}
+              onClick={onToggleSpot}
               className={togglePill(showSpot)}
               title="Overlay NIFTY spot price"
             >
@@ -447,7 +453,7 @@ export function PremiumDecayChart({
             {/* OI toggle */}
             <button
               type="button"
-              onClick={() => setShowOiOverlay((v) => !v)}
+              onClick={onToggleOiOverlay}
               className={togglePill(showOiOverlay)}
               title="Overlay total CE/PE OI change"
             >

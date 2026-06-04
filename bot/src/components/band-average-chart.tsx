@@ -116,15 +116,17 @@ function areaPath(slots: PremiumDecayMinutePoint[], m: ChartMetrics, key: "ceDec
 type BandAverageChartProps = {
   sessionDate: string;
   live: boolean;
+  showSpot: boolean;
+  showOiOverlay: boolean;
+  onToggleSpot: () => void;
+  onToggleOiOverlay: () => void;
 };
 
-export function BandAverageChart({ sessionDate, live }: BandAverageChartProps) {
+export function BandAverageChart({ sessionDate, live, showSpot, showOiOverlay, onToggleSpot, onToggleOiOverlay }: BandAverageChartProps) {
   const [rows, setRows] = useState<PremiumDecayRow[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [hoverIndex, setHoverIndex] = useState<number | null>(null);
-  const [showSpot, setShowSpot] = useState(false);
-  const [showOiOverlay, setShowOiOverlay] = useState(false);
   const [oiRawData, setOiRawData] = useState<OiSnapshot[]>([]);
   const svgRef = useRef<SVGSVGElement>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
@@ -337,12 +339,12 @@ export function BandAverageChart({ sessionDate, live }: BandAverageChartProps) {
             </span>
 
             {/* Spot toggle */}
-            <button type="button" onClick={() => setShowSpot((v) => !v)} className={togglePill(showSpot)} title="Overlay NIFTY spot price">
+            <button type="button" onClick={onToggleSpot} className={togglePill(showSpot)} title="Overlay NIFTY spot price">
               <span className="h-2 w-2 rounded-full bg-zinc-500" />Spot
             </button>
 
             {/* OI toggle */}
-            <button type="button" onClick={() => setShowOiOverlay((v) => !v)} className={togglePill(showOiOverlay)} title="Overlay total CE/PE OI change">
+            <button type="button" onClick={onToggleOiOverlay} className={togglePill(showOiOverlay)} title="Overlay total CE/PE OI change">
               <span className="h-2 w-2 rounded-full bg-violet-500" />OI
             </button>
 
