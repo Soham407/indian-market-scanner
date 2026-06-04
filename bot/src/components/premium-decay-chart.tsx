@@ -538,15 +538,15 @@ export function PremiumDecayChart({
               )}
             </g>
 
-            {/* LTP right-edge label */}
+            {/* LTP right-edge label — 52px wide to fit "23,332" */}
             {showSpot && scaleLtpY && minuteSlots.length > 0 && (() => {
               const lastLtp = minuteSlots.at(-1)!.underlyingLtp;
               const y = scaleLtpY(lastLtp);
               return (
                 <g>
-                  <rect x={svgWidth - MARGIN.right - 2} y={y - 9} width={MARGIN.right + 2} height={14} fill="#334155" rx="2" />
+                  <rect x={svgWidth - 52} y={y - 9} width={52} height={14} fill="#334155" rx="2" />
                   <text
-                    x={svgWidth - 2}
+                    x={svgWidth - 3}
                     y={y + 2}
                     fill="white"
                     fontSize="9"
