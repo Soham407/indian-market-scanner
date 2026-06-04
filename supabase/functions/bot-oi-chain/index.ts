@@ -287,7 +287,7 @@ Deno.serve(async () => {
       .from("bot_settings").select("nifty_previous_date").eq("id", 1).maybeSingle();
     const storedDate = (settings as { nifty_previous_date: string | null } | null)?.nifty_previous_date;
 
-    const settingsPatch: Record<string, unknown> = { id: 1, nifty_current_ltp: underlyingLtp };
+    const settingsPatch: Record<string, unknown> = { nifty_current_ltp: underlyingLtp };
 
     if (storedDate !== sessionDate) {
       const yDate = lastTradingDateIst(sampledAt);
@@ -301,7 +301,11 @@ Deno.serve(async () => {
       }
     }
 
-    await supabase.from("bot_settings").upsert(settingsPatch, { onConflict: "id" });
+    const { error: settingsErr } = await supabase
+      .from("bot_settings")
+      .update(settingsPatch)
+      .eq("id", 1);
+    if (settingsErr) console.error("[bot-oi-chain] settings update failed:", settingsErr.message);
 
     return Response.json({ ok: true, strikes: rows.length, expiry: nearestExpiryStr, underlying_ltp: underlyingLtp, tokens_found: optionTokens.length });
   } catch (err) {
