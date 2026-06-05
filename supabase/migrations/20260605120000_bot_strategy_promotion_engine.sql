@@ -9,7 +9,10 @@ alter table public.bot_strategies
 do $$
 begin
   if not exists (
-    select 1 from pg_constraint where conname = 'bot_strategies_lifecycle_status_check'
+    select 1
+    from pg_constraint
+    where conname = 'bot_strategies_lifecycle_status_check'
+      and conrelid = 'public.bot_strategies'::regclass
   ) then
     alter table public.bot_strategies
       add constraint bot_strategies_lifecycle_status_check
@@ -17,7 +20,10 @@ begin
   end if;
 
   if not exists (
-    select 1 from pg_constraint where conname = 'bot_strategies_risk_multiplier_cap_check'
+    select 1
+    from pg_constraint
+    where conname = 'bot_strategies_risk_multiplier_cap_check'
+      and conrelid = 'public.bot_strategies'::regclass
   ) then
     alter table public.bot_strategies
       add constraint bot_strategies_risk_multiplier_cap_check
@@ -31,7 +37,10 @@ begin
   end if;
 
   if not exists (
-    select 1 from pg_constraint where conname = 'bot_strategies_promotion_thresholds_object_check'
+    select 1
+    from pg_constraint
+    where conname = 'bot_strategies_promotion_thresholds_object_check'
+      and conrelid = 'public.bot_strategies'::regclass
   ) then
     alter table public.bot_strategies
       add constraint bot_strategies_promotion_thresholds_object_check
@@ -39,6 +48,8 @@ begin
   end if;
 end $$;
 
+-- These are new managed bot tables; this migration expects no manually-created
+-- partial versions of them to already exist.
 create table if not exists public.bot_trade_signals (
   id uuid primary key default gen_random_uuid(),
   strategy_id uuid not null references public.bot_strategies(id) on delete restrict,
@@ -193,53 +204,3 @@ set
     'reduced_profit_factor', 1.00
   )
 where name = 'orb_breakout';
-
-create schema if not exists extensions;
-create extension if not exists pg_net with schema extensions;
-create extension if not exists pg_cron with schema pg_catalog;
-
-select cron.unschedule(jobid)
-from cron.job
-where jobname in ('bot-signal-executor-every-minute', 'bot-feedback-weekly-friday');
-
-select cron.schedule(
-  'bot-signal-executor-every-minute',
-  '* 3,4,5,6,7,8,9,10 * * 1-5',
-  $$
-  select net.http_post(
-    url := coalesce(
-      (select decrypted_secret from vault.decrypted_secrets where name = 'bot_project_url' limit 1),
-      (select decrypted_secret from vault.decrypted_secrets where name = 'market_sniper_project_url' limit 1)
-    ) || '/functions/v1/bot-signal-executor',
-    headers := jsonb_build_object(
-      'Content-Type', 'application/json',
-      'Authorization', 'Bearer ' || coalesce(
-        (select decrypted_secret from vault.decrypted_secrets where name = 'bot_anon_jwt' limit 1),
-        (select decrypted_secret from vault.decrypted_secrets where name = 'market_sniper_anon_jwt' limit 1)
-      )
-    ),
-    body := jsonb_build_object('scheduled_at', now())
-  ) as request_id;
-  $$
-);
-
-select cron.schedule(
-  'bot-feedback-weekly-friday',
-  '45 10 * * 5',
-  $$
-  select net.http_post(
-    url := coalesce(
-      (select decrypted_secret from vault.decrypted_secrets where name = 'bot_project_url' limit 1),
-      (select decrypted_secret from vault.decrypted_secrets where name = 'market_sniper_project_url' limit 1)
-    ) || '/functions/v1/bot-feedback-run',
-    headers := jsonb_build_object(
-      'Content-Type', 'application/json',
-      'Authorization', 'Bearer ' || coalesce(
-        (select decrypted_secret from vault.decrypted_secrets where name = 'bot_anon_jwt' limit 1),
-        (select decrypted_secret from vault.decrypted_secrets where name = 'market_sniper_anon_jwt' limit 1)
-      )
-    ),
-    body := jsonb_build_object('scheduled_at', now())
-  ) as request_id;
-  $$
-);
