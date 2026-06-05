@@ -172,12 +172,11 @@ async function enqueueBotSignals(
 
   if (signals.length === 0) return { queued: 0, skipped: alerts.length };
 
-  const signalKeys = signals.map((signal) => signal.metadata.alert_dedupe_key as string);
   const { data: existingSignals, error: existingSignalsError } = await supabase
     .from("bot_trade_signals")
     .select("metadata")
-    .in("metadata->>alert_dedupe_key", signalKeys);
-
+    .in("metadata->>alert_dedupe_key", signalKeys)
+    .in("status", ["pending", "shadow_tracked", "accepted"]);
   if (existingSignalsError) {
     return { queued: 0, skipped: alerts.length, error: existingSignalsError.message };
   }
