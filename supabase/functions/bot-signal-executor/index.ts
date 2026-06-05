@@ -12,9 +12,9 @@ import {
 } from "./executor.ts";
 
 const BASE_RISK_AMOUNT = 1000;
-const MAX_CONCURRENT_POSITIONS = 2;
-const MAX_TRADES_PER_DAY = 6;
-const SIGNAL_LIMIT = 25;
+const DEFAULT_MAX_CONCURRENT_POSITIONS = 20;
+const DEFAULT_MAX_TRADES_PER_DAY = 100;
+const DEFAULT_SIGNAL_LIMIT = 100;
 const IST_OFFSET_MS = 330 * 60 * 1000;
 
 function istDayStartIso(now: Date): string {
@@ -35,7 +35,7 @@ Deno.serve(async () => {
 
     const { data: settings, error: settingsError } = await supabase
       .from("bot_settings")
-      .select("trading_enabled")
+      .select("trading_enabled,max_concurrent_positions,max_daily_trades,signal_batch_limit")
       .eq("id", 1)
       .maybeSingle();
 
@@ -44,6 +44,9 @@ Deno.serve(async () => {
     }
 
     const tradingEnabled = settings?.trading_enabled ?? false;
+    const maxConcurrentPositions = Number(settings?.max_concurrent_positions ?? DEFAULT_MAX_CONCURRENT_POSITIONS);
+    const maxTradesPerDay = Number(settings?.max_daily_trades ?? DEFAULT_MAX_TRADES_PER_DAY);
+    const signalLimit = Number(settings?.signal_batch_limit ?? DEFAULT_SIGNAL_LIMIT);
 
     const { data: openTrades, error: openTradesError } = await supabase
       .from("bot_paper_trades")
@@ -81,7 +84,7 @@ Deno.serve(async () => {
       )
       .eq("status", "pending")
       .order("signal_time", { ascending: true })
-      .limit(SIGNAL_LIMIT);
+      .limit(signalLimit);
 
     if (signalsError) {
       return Response.json({ error: signalsError.message }, { status: 500 });
@@ -147,8 +150,8 @@ Deno.serve(async () => {
       const context: ExecutorContext = {
         tradingEnabled,
         baseRiskAmount: BASE_RISK_AMOUNT,
-        maxConcurrentPositions: MAX_CONCURRENT_POSITIONS,
-        maxTradesPerDay: MAX_TRADES_PER_DAY,
+        maxConcurrentPositions,
+        maxTradesPerDay,
         openPositionCount: currentOpenPositionCount,
         tradesTodayCount: currentTradesTodayCount,
         hasDuplicateForInstrumentToday,

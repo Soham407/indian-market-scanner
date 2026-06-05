@@ -92,7 +92,7 @@ Deno.serve(async () => {
 
   const { data: botSettings, error: settingsError } = await supabase
     .from("bot_settings")
-    .select("trading_enabled")
+    .select("trading_enabled,max_daily_trades")
     .eq("id", 1)
     .maybeSingle();
 
@@ -154,6 +154,7 @@ Deno.serve(async () => {
   }
 
   // Guard: check daily trade cap
+  const dailySignalCap = Number(botSettings?.max_daily_trades ?? 100);
   const { count: signalsToday } = await supabase
     .from("bot_trade_signals")
     .select("id", { count: "exact", head: true })
@@ -161,12 +162,11 @@ Deno.serve(async () => {
     .gte("signal_time", `${todayIst}T00:00:00Z`)
     .lt("signal_time", `${todayIst}T23:59:59Z`);
 
-  const DAILY_SIGNAL_CAP = 6;
-  if ((signalsToday ?? 0) >= DAILY_SIGNAL_CAP) {
-    return Response.json({ status: `Daily cap of ${DAILY_SIGNAL_CAP} signals reached`, trades_placed: 0 });
+  if ((signalsToday ?? 0) >= dailySignalCap) {
+    return Response.json({ status: `Daily cap of ${dailySignalCap} signals reached`, trades_placed: 0 });
   }
 
-  const remaining = DAILY_SIGNAL_CAP - (signalsToday ?? 0);
+  const remaining = dailySignalCap - (signalsToday ?? 0);
 
   const { data: instruments } = await supabase
     .from("instruments")
