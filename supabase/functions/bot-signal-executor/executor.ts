@@ -144,13 +144,13 @@ function isPaperLiveStatus(status: LifecycleStatus): boolean {
 }
 
 function isWithinSanityBand(
-  triggerPrice: number,
+  entryPrice: number,
   latestPrice: number | null,
 ): boolean {
-  if (latestPrice === null) return true;
+  if (latestPrice === null) return false;
   if (!isFiniteNumber(latestPrice) || latestPrice <= 0) return false;
 
-  return Math.abs(triggerPrice - latestPrice) / latestPrice <= PRICE_SANITY_PCT;
+  return Math.abs(entryPrice - latestPrice) / latestPrice <= PRICE_SANITY_PCT;
 }
 
 export function buildExecutorDecision(
@@ -171,10 +171,6 @@ export function buildExecutorDecision(
     return { action: "reject", reason: "strategy is research only" };
   }
 
-  if (!isWithinSanityBand(typedSignal.trigger_price, context.latestPrice)) {
-    return { action: "reject", reason: "trigger price outside sanity bounds" };
-  }
-
   const riskMultiplier = capRiskMultiplier(
     strategy.risk_multiplier,
     strategy.max_risk_multiplier,
@@ -192,6 +188,14 @@ export function buildExecutorDecision(
 
   if (!context.tradingEnabled) {
     return { action: "reject", reason: "trading disabled" };
+  }
+
+  if (context.latestPrice === null) {
+    return { action: "reject", reason: "missing latest price for sanity check" };
+  }
+
+  if (!isWithinSanityBand(entryPrice, context.latestPrice)) {
+    return { action: "reject", reason: "trigger price outside sanity bounds" };
   }
 
   if (context.openPositionCount >= context.maxConcurrentPositions) {

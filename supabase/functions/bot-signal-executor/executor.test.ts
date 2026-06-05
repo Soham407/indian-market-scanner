@@ -87,6 +87,15 @@ Deno.test("buildExecutorDecision creates shadow outcome without paper trade", ()
   assertEquals(decision.action, "shadow");
 });
 
+Deno.test("buildExecutorDecision lets shadow mode proceed without latest price", () => {
+  const decision = buildExecutorDecision(
+    baseSignal,
+    { ...liveStrategy, lifecycle_status: "shadow" },
+    { ...context, latestPrice: null },
+  );
+  assertEquals(decision.action, "shadow");
+});
+
 Deno.test("buildExecutorDecision rejects paper entry when kill switch is disabled", () => {
   const decision = buildExecutorDecision(baseSignal, liveStrategy, {
     ...context,
@@ -118,6 +127,32 @@ Deno.test("buildExecutorDecision accepts reduced lifecycle as paper trade", () =
   assertEquals(decision.action, "paper_trade");
   if (decision.action !== "paper_trade") throw new Error("expected paper trade");
   assertEquals(decision.entryPrice, 100.05);
+});
+
+Deno.test("buildExecutorDecision rejects live paper entry when latest price is missing", () => {
+  const decision = buildExecutorDecision(baseSignal, liveStrategy, {
+    ...context,
+    latestPrice: null,
+  });
+  assertEquals(decision.action, "reject");
+  if (decision.action !== "reject") throw new Error("expected reject");
+  assertEquals(decision.reason, "missing latest price for sanity check");
+});
+
+Deno.test("buildExecutorDecision rejects when slippage-adjusted entry breaks sanity band", () => {
+  const boundarySignal = {
+    ...baseSignal,
+    trigger_price: 104.98,
+    stop_loss_price: 100,
+    target_price: 110,
+  };
+  const decision = buildExecutorDecision(boundarySignal, liveStrategy, {
+    ...context,
+    latestPrice: 100,
+  });
+  assertEquals(decision.action, "reject");
+  if (decision.action !== "reject") throw new Error("expected reject");
+  assertEquals(decision.reason, "trigger price outside sanity bounds");
 });
 
 Deno.test("buildExecutorDecision rejects duplicate same-instrument day trade", () => {
