@@ -3,11 +3,13 @@ import {
   getMarketSessionStatus,
   marketClosedResponse,
 } from "../_shared/market-hours.ts";
+import { ema, rsi, sma } from "../_shared/indicators.ts";
 
 type Instrument = {
   id: string;
   symbol: string;
   last_price: number | null;
+  angel_one_token: string | null;
   previous_day_high: number | null;
   previous_day_low: number | null;
   vwap: number | null;
@@ -43,12 +45,189 @@ type StrategyLookup = {
   name: string;
 };
 
+type DailyCandle = [string, number, number, number, number, number];
+type AngelAuth = { apiKey: string; jwtToken: string };
+
+const OR_BREAKOUT_WHITELIST = new Set([
+  "INDUSINDBK",
+  "RELIANCE",
+  "TATASTEEL",
+  "TITAN",
+  "WIPRO",
+]);
+
 // ---------------------------------------------------------------------------
 // Time helpers (IST = UTC+5:30)
 // ---------------------------------------------------------------------------
 
 function todayIst(): string {
   return new Date(Date.now() + 5.5 * 3600 * 1000).toISOString().slice(0, 10);
+}
+
+function tradingDateForScan(): string {
+  const nowMs = Date.now() + 5.5 * 3600 * 1000;
+  const now = new Date(nowMs);
+  const dow = now.getUTCDay();
+  const hm = now.getUTCHours() * 60 + now.getUTCMinutes();
+  const marketCloseIstMin = 930; // 15:30 IST
+  if (dow >= 1 && dow <= 5 && hm >= marketCloseIstMin) {
+    return now.toISOString().slice(0, 10);
+  }
+  const back = dow === 0 ? 2 : dow === 1 ? 3 : 1;
+  return new Date(nowMs - back * 86400 * 1000).toISOString().slice(0, 10);
+}
+
+function historicalFromDate(): string {
+  const d = new Date(Date.now() + 5.5 * 3600 * 1000 - 120 * 86400 * 1000);
+  return d.toISOString().slice(0, 10) + " 09:00";
+}
+
+async function generateTotp(secret: string): Promise<string> {
+  const stripped = secret.replace(/[-\s]/g, "");
+  const isHex = /^[0-9a-fA-F]+$/.test(stripped) && stripped.length % 2 === 0;
+  let keyBytes: Uint8Array;
+  if (isHex) {
+    keyBytes = new Uint8Array(stripped.length / 2);
+    for (let i = 0; i < keyBytes.length; i++) {
+      keyBytes[i] = parseInt(stripped.slice(i * 2, i * 2 + 2), 16);
+    }
+  } else {
+    const alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZ234567";
+    const cleaned = stripped.toUpperCase().replace(/=/g, "");
+    let bits = "";
+    for (const ch of cleaned) {
+      const v = alphabet.indexOf(ch);
+      bits += (v === -1 ? 0 : v).toString(2).padStart(5, "0");
+    }
+    keyBytes = new Uint8Array(Math.floor(bits.length / 8));
+    for (let i = 0; i < keyBytes.length; i++) {
+      keyBytes[i] = parseInt(bits.slice(i * 8, i * 8 + 8), 2);
+    }
+  }
+  const counter = Math.floor(Date.now() / 1000 / 30);
+  const msg = new Uint8Array(8);
+  let c = counter;
+  for (let i = 7; i >= 0; i--) {
+    msg[i] = c & 0xff;
+    c = Math.floor(c / 256);
+  }
+  const keyData = new ArrayBuffer(keyBytes.byteLength);
+  new Uint8Array(keyData).set(keyBytes);
+  const key = await crypto.subtle.importKey("raw", keyData, { name: "HMAC", hash: "SHA-1" }, false, ["sign"]);
+  const mac = new Uint8Array(await crypto.subtle.sign("HMAC", key, msg));
+  const offset = mac[19] & 0x0f;
+  const code = ((mac[offset] & 0x7f) << 24) | ((mac[offset + 1] & 0xff) << 16) | ((mac[offset + 2] & 0xff) << 8) | (mac[offset + 3] & 0xff);
+  return (code % 1_000_000).toString().padStart(6, "0");
+}
+
+function angelHeaders(apiKey: string, jwtToken?: string): Record<string, string> {
+  const h: Record<string, string> = {
+    "Content-Type": "application/json",
+    "Accept": "application/json",
+    "X-UserType": "USER",
+    "X-SourceID": "WEB",
+    "X-ClientLocalIP": "127.0.0.1",
+    "X-ClientPublicIP": "1.1.1.1",
+    "X-MACAddress": "00-00-00-00-00-00",
+    "X-PrivateKey": apiKey,
+  };
+  if (jwtToken) h["Authorization"] = `Bearer ${jwtToken}`;
+  return h;
+}
+
+async function authenticateAngelOne(): Promise<AngelAuth> {
+  const apiKey = Deno.env.get("AngelOne_Apikey");
+  const secretKey = Deno.env.get("AngelOne_SecretKey");
+  const clientId = Deno.env.get("AngelOne_ClientID");
+  const pin = Deno.env.get("AngelOne_PIN");
+  if (!apiKey || !secretKey || !clientId || !pin) {
+    throw new Error("Missing Angel One secrets");
+  }
+  const totp = await generateTotp(secretKey);
+  const resp = await fetch("https://apiconnect.angelone.in/rest/auth/angelbroking/user/v1/loginByPassword", {
+    method: "POST",
+    headers: angelHeaders(apiKey),
+    body: JSON.stringify({ clientcode: clientId, password: pin, totp }),
+  });
+  const data = await resp.json();
+  if (!data?.status || !data?.data?.jwtToken) {
+    throw new Error(`Angel One login failed: ${data?.message ?? JSON.stringify(data)}`);
+  }
+  return { apiKey, jwtToken: data.data.jwtToken as string };
+}
+
+async function fetchDailyCandles(
+  apiKey: string,
+  jwtToken: string,
+  token: string,
+): Promise<DailyCandle[]> {
+  const todate = tradingDateForScan() + " 15:30";
+  const resp = await fetch("https://apiconnect.angelone.in/rest/secure/angelbroking/historical/v1/getCandleData", {
+    method: "POST",
+    headers: angelHeaders(apiKey, jwtToken),
+    body: JSON.stringify({
+      exchange: "NSE",
+      symboltoken: token,
+      interval: "ONE_DAY",
+      fromdate: historicalFromDate(),
+      todate,
+    }),
+  });
+  const data = await resp.json();
+  return (data?.data ?? []) as DailyCandle[];
+}
+
+function dailyAtr(highs: number[], lows: number[], closes: number[], period = 14): number {
+  if (closes.length < period + 1) return NaN;
+  const trs: number[] = [];
+  for (let i = 1; i < closes.length; i++) {
+    trs.push(
+      Math.max(
+        highs[i] - lows[i],
+        Math.abs(highs[i] - closes[i - 1]),
+        Math.abs(lows[i] - closes[i - 1]),
+      ),
+    );
+  }
+  return sma(trs.slice(-period), period);
+}
+
+async function passesOrBreakoutDailyGate(
+  inst: Instrument,
+  auth: AngelAuth,
+): Promise<boolean> {
+  if (!OR_BREAKOUT_WHITELIST.has(inst.symbol)) return false;
+  if (!inst.angel_one_token) return false;
+
+  const candles = await fetchDailyCandles(auth.apiKey, auth.jwtToken, inst.angel_one_token);
+  if (candles.length < 21) return false;
+
+  // Use the most recent fully completed daily bar as the regime anchor.
+  // The last returned bar is the current trading day, so we only use its open
+  // for the gap check and keep all indicator inputs on prior completed bars.
+  const latestBar = candles[candles.length - 1];
+  const priorBar = candles[candles.length - 2];
+  const history = candles.slice(0, -1);
+  const highs = history.map((c) => c[2]);
+  const lows = history.map((c) => c[3]);
+  const closes = history.map((c) => c[4]);
+  const regimeClose = closes[closes.length - 1];
+  const regimeOpen = latestBar[1];
+  const prevClose = priorBar[4];
+  const ema5Val = ema(closes, 5);
+  const rsiVal = rsi(closes, 14);
+  const atrVal = dailyAtr(highs, lows, closes, 14);
+  if ([regimeClose, regimeOpen, prevClose, ema5Val, rsiVal, atrVal].some((v) => !Number.isFinite(v))) {
+    return false;
+  }
+
+  const gapPct = (regimeOpen - prevClose) / prevClose;
+  return (
+    regimeClose > ema5Val &&
+    rsiVal > 55 &&
+    gapPct <= -0.005 &&
+    (atrVal / regimeClose) > 0.02
+  );
 }
 
 function isMorningTrapWindow(): boolean {
@@ -172,6 +351,10 @@ async function enqueueBotSignals(
 
   if (signals.length === 0) return { queued: 0, skipped: alerts.length };
 
+  const signalKeys = signals
+    .map((signal) => signal.metadata?.alert_dedupe_key)
+    .filter((key): key is string => typeof key === "string");
+
   const { data: existingSignals, error: existingSignalsError } = await supabase
     .from("bot_trade_signals")
     .select("metadata")
@@ -204,8 +387,6 @@ async function enqueueBotSignals(
   }
 
   return { queued, skipped: alerts.length - queued };
-
-  return { queued: missingSignals.length, skipped: alerts.length - missingSignals.length };
 }
 
 // ---------------------------------------------------------------------------
@@ -228,7 +409,7 @@ Deno.serve(async () => {
   const { data: instruments, error } = await supabase
     .from("instruments")
     .select(
-      "id,symbol,last_price,previous_day_high,previous_day_low,vwap," +
+      "id,symbol,last_price,angel_one_token,previous_day_high,previous_day_low,vwap," +
       "session_high,session_low,session_volume,session_date,prev_day_volume," +
       "or_high,or_low,or_date",
     )
@@ -237,15 +418,27 @@ Deno.serve(async () => {
   if (error) return Response.json({ error: error.message }, { status: 500 });
 
   const today = todayIst();
-  const alerts = ((instruments ?? []) as unknown as Instrument[]).flatMap((inst) => {
+  const hasOrBreakoutCandidate = (instruments ?? []).some((rawInst) => {
+    const inst = rawInst as unknown as Instrument;
+    return OR_BREAKOUT_WHITELIST.has(inst.symbol) && !!inst.angel_one_token;
+  });
+  const angelAuthPromise: Promise<AngelAuth | null> = hasOrBreakoutCandidate
+    ? authenticateAngelOne().catch((err) => {
+        console.error("[scan-alerts] Angel One auth failed for OR breakout gate:", err);
+        return null;
+      })
+    : Promise.resolve(null);
+  const alerts = (await Promise.all((instruments ?? []).map(async (rawInst) => {
+    const inst = rawInst as unknown as Instrument;
     const bearish = buildBearishAlert(inst, today);
     const bullish = buildBullishAlert(inst, today);
     const orBearish = buildOrTrapBearish(inst, today);
     const orBullish = buildOrTrapBullish(inst, today);
-    const orBreakBullish = buildOrBreakoutBullish(inst, today);
-    const orBreakBearish = buildOrBreakoutBearish(inst, today);
+    const angelAuth = await angelAuthPromise;
+    const orBreakBullish = angelAuth ? await buildOrBreakoutBullish(inst, today, angelAuth) : null;
+    const orBreakBearish = angelAuth ? await buildOrBreakoutBearish(inst, today, angelAuth) : null;
     return [bearish, bullish, orBearish, orBullish, orBreakBullish, orBreakBearish].filter(Boolean);
-  }) as AlertCandidate[];
+  }))).flat() as AlertCandidate[];
 
   if (alerts.length === 0) return Response.json({ inserted: 0 });
 
@@ -516,8 +709,10 @@ function buildOrTrapBullish(inst: Instrument, today: string) {
 // Window extends to 14:30 IST to catch afternoon momentum sessions.
 // ---------------------------------------------------------------------------
 
-function buildOrBreakoutBullish(inst: Instrument, today: string) {
+async function buildOrBreakoutBullish(inst: Instrument, today: string, auth: AngelAuth) {
   if (!isOrBreakoutWindow()) return null;
+  if (!OR_BREAKOUT_WHITELIST.has(inst.symbol)) return null;
+  if (!(await passesOrBreakoutDailyGate(inst, auth))) return null;
 
   const { id, symbol, last_price, or_high, or_low, or_date, vwap,
           session_high, session_volume, prev_day_volume } = inst;
@@ -582,8 +777,10 @@ function buildOrBreakoutBullish(inst: Instrument, today: string) {
 // Short the momentum — price likely heading lower.
 // ---------------------------------------------------------------------------
 
-function buildOrBreakoutBearish(inst: Instrument, today: string) {
+async function buildOrBreakoutBearish(inst: Instrument, today: string, auth: AngelAuth) {
   if (!isOrBreakoutWindow()) return null;
+  if (!OR_BREAKOUT_WHITELIST.has(inst.symbol)) return null;
+  if (!(await passesOrBreakoutDailyGate(inst, auth))) return null;
 
   const { id, symbol, last_price, or_low, or_high, or_date, vwap,
           session_low, session_volume, prev_day_volume } = inst;
