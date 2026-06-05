@@ -238,6 +238,8 @@ Deno.serve(async () => {
         target_price: targetPrice,
         timeframe: "1m",
         metadata: {
+          symbol: inst.symbol,
+          name: inst.name,
           pattern: "orb_breakout",
           or_high: inst.or_high,
           or_low: inst.or_low,
