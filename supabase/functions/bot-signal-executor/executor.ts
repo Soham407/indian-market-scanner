@@ -194,8 +194,12 @@ export function buildExecutorDecision(
     return { action: "reject", reason: "missing latest price for sanity check" };
   }
 
-  if (!isWithinSanityBand(entryPrice, context.latestPrice)) {
+  if (!isWithinSanityBand(typedSignal.trigger_price, context.latestPrice)) {
     return { action: "reject", reason: "trigger price outside sanity bounds" };
+  }
+
+  if (!isWithinSanityBand(entryPrice, context.latestPrice)) {
+    return { action: "reject", reason: "entry price outside sanity bounds" };
   }
 
   if (context.openPositionCount >= context.maxConcurrentPositions) {

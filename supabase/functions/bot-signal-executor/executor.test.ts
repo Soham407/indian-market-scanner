@@ -139,6 +139,22 @@ Deno.test("buildExecutorDecision rejects live paper entry when latest price is m
   assertEquals(decision.reason, "missing latest price for sanity check");
 });
 
+Deno.test("buildExecutorDecision rejects when raw trigger breaks sanity band", () => {
+  const boundarySignal = {
+    ...baseSignal,
+    trigger_price: 105.1,
+    stop_loss_price: 100,
+    target_price: 110,
+  };
+  const decision = buildExecutorDecision(boundarySignal, liveStrategy, {
+    ...context,
+    latestPrice: 100,
+  });
+  assertEquals(decision.action, "reject");
+  if (decision.action !== "reject") throw new Error("expected reject");
+  assertEquals(decision.reason, "trigger price outside sanity bounds");
+});
+
 Deno.test("buildExecutorDecision rejects when slippage-adjusted entry breaks sanity band", () => {
   const boundarySignal = {
     ...baseSignal,
@@ -152,7 +168,7 @@ Deno.test("buildExecutorDecision rejects when slippage-adjusted entry breaks san
   });
   assertEquals(decision.action, "reject");
   if (decision.action !== "reject") throw new Error("expected reject");
-  assertEquals(decision.reason, "trigger price outside sanity bounds");
+  assertEquals(decision.reason, "entry price outside sanity bounds");
 });
 
 Deno.test("buildExecutorDecision rejects duplicate same-instrument day trade", () => {
