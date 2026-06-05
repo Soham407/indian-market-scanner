@@ -107,7 +107,7 @@ Deno.serve(async () => {
       );
       const rMultiple = trade.risk_amount > 0 ? netPnl / trade.risk_amount : null;
 
-      await supabase
+      const { error: outcomeError } = await supabase
         .from("bot_signal_outcomes")
         .update({
           exit_price: exitPriceWithSlippage,
@@ -120,6 +120,10 @@ Deno.serve(async () => {
           closed_at: exitTimeIso,
         })
         .eq("paper_trade_id", trade.id);
+
+      if (outcomeError) {
+        console.error("[eod-flatten] failed to update bot_signal_outcomes:", outcomeError.message);
+      }
 
       tradesFlattened++;
     }
