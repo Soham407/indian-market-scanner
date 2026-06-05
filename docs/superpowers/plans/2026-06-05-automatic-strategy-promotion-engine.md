@@ -598,7 +598,7 @@ export function buildExecutorDecision(
     targetPrice: signal.target_price,
     shares,
     riskAmount,
-    entrySlippagePct: 0.05,
+    entrySlippagePct: ENTRY_SLIPPAGE_RATE,
   };
 }
 ```
@@ -1476,6 +1476,7 @@ supabase/functions/orb-scanner/*
 supabase/functions/check-exits/*
 supabase/functions/eod-flatten/*
 docs/superpowers/plans/2026-06-05-automatic-strategy-promotion-engine.md
+docs/superpowers/specs/2026-06-05-automatic-strategy-promotion-engine-design.md
 ```
 
 No `bot/src/components` or `bot/src/app` dashboard files should appear.

@@ -35,6 +35,7 @@ Deno.serve(async () => {
 
   let reviewed = 0;
   let changed = 0;
+  const results: Array<{ strategy_id: string; success: boolean; error?: string }> = [];
 
   for (const strategyRow of (strategies ?? []) as FeedbackStrategy[]) {
     const { data: closedTrades, error: tradesError } = await supabase
@@ -47,7 +48,8 @@ Deno.serve(async () => {
       .order("exit_time", { ascending: true });
 
     if (tradesError) {
-      return Response.json({ error: tradesError.message, strategy_id: strategyRow.id }, { status: 500 });
+      results.push({ strategy_id: strategyRow.id, success: false, error: tradesError.message });
+      continue;
     }
 
     const { count: rejectedSignals, error: rejectedError } = await supabase
@@ -59,7 +61,8 @@ Deno.serve(async () => {
       .lt("processed_at", windowEnd);
 
     if (rejectedError) {
-      return Response.json({ error: rejectedError.message, strategy_id: strategyRow.id }, { status: 500 });
+      results.push({ strategy_id: strategyRow.id, success: false, error: rejectedError.message });
+      continue;
     }
 
     const metrics = calculateFeedbackMetrics((closedTrades ?? []) as FeedbackTrade[], rejectedSignals ?? 0);
@@ -92,7 +95,8 @@ Deno.serve(async () => {
     });
 
     if (reviewError) {
-      return Response.json({ error: reviewError.message, strategy_id: strategyRow.id }, { status: 500 });
+      results.push({ strategy_id: strategyRow.id, success: false, error: reviewError.message });
+      continue;
     }
 
     reviewed++;
@@ -110,8 +114,11 @@ Deno.serve(async () => {
       .eq("id", strategyRow.id);
 
     if (updateError) {
-      return Response.json({ error: updateError.message, strategy_id: strategyRow.id }, { status: 500 });
+      results.push({ strategy_id: strategyRow.id, success: false, error: updateError.message });
+      continue;
     }
+
+    results.push({ strategy_id: strategyRow.id, success: true });
 
     if (statusChanged || riskChanged) {
       changed++;
@@ -128,11 +135,15 @@ Deno.serve(async () => {
     }
   }
 
+  const allSucceeded = results.every((r) => r.success);
+  const status = allSucceeded ? 200 : 207;
+
   return Response.json({
-    ok: true,
+    ok: allSucceeded,
     reviewed,
     changed,
     window_start: windowStart,
     window_end: windowEnd,
-  });
+    results,
+  }, { status });
 });
