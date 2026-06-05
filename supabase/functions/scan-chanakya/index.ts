@@ -376,15 +376,18 @@ async function enqueueBotSignals(
 
   if (missingSignals.length === 0) return { queued: 0, skipped: alerts.length };
 
-  const { error } = await supabase.from("bot_trade_signals").insert(missingSignals);
-  if (error) {
-    const isDuplicateRace = "code" in error && error.code === "23505";
-    return {
-      queued: 0,
-      skipped: alerts.length,
-      error: isDuplicateRace ? undefined : error.message,
-    };
+  let queued = 0;
+  for (const signal of missingSignals) {
+    const { error } = await supabase.from("bot_trade_signals").insert(signal);
+    if (error) {
+      const isDuplicateRace = "code" in error && error.code === "23505";
+      if (isDuplicateRace) continue;
+      return { queued, skipped: alerts.length - queued, error: error.message };
+    }
+    queued++;
   }
+
+  return { queued, skipped: alerts.length - queued };
 
   return { queued: missingSignals.length, skipped: alerts.length - missingSignals.length };
 }
