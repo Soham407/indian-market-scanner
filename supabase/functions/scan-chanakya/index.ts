@@ -123,7 +123,9 @@ async function generateTotp(secret: string): Promise<string> {
   const msg = new Uint8Array(8);
   let c = counter;
   for (let i = 7; i >= 0; i--) { msg[i] = c & 0xff; c = Math.floor(c / 256); }
-  const key = await crypto.subtle.importKey("raw", keyBytes, { name: "HMAC", hash: "SHA-1" }, false, ["sign"]);
+  const keyData = new ArrayBuffer(keyBytes.byteLength);
+  new Uint8Array(keyData).set(keyBytes);
+  const key = await crypto.subtle.importKey("raw", keyData, { name: "HMAC", hash: "SHA-1" }, false, ["sign"]);
   const mac = new Uint8Array(await crypto.subtle.sign("HMAC", key, msg));
   const offset = mac[19] & 0x0f;
   const code = ((mac[offset] & 0x7f) << 24) | ((mac[offset + 1] & 0xff) << 16) | ((mac[offset + 2] & 0xff) << 8) | (mac[offset + 3] & 0xff);
@@ -176,6 +178,13 @@ async function fetchDailyCandles(
 // ---------------------------------------------------------------------------
 
 type DbInstrument = { id: string; symbol: string; angel_one_token: string | null };
+
+type ChanakyaAlert = ReturnType<typeof buildAlert>;
+
+type StrategyLookup = {
+  id: string;
+  name: string;
+};
 
 async function resolveTokens(
   instruments: DbInstrument[], supabase: ReturnType<typeof createServiceClient>,
@@ -304,6 +313,83 @@ function buildAlert(inst: DbInstrument, result: ChanakyaResult, today: string) {
     },
     expires_at: new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString(),
   };
+}
+
+async function enqueueBotSignals(
+  supabase: ReturnType<typeof createServiceClient>,
+  alerts: ChanakyaAlert[],
+): Promise<{ queued: number; skipped: number; error?: string }> {
+  if (alerts.length === 0) return { queued: 0, skipped: 0 };
+
+  const { data: strategy, error: strategyError } = await supabase
+    .from("bot_strategies")
+    .select("id,name")
+    .eq("name", "chanakya_bullish")
+    .eq("enabled", true)
+    .neq("lifecycle_status", "disabled")
+    .maybeSingle();
+
+  if (strategyError) return { queued: 0, skipped: alerts.length, error: strategyError.message };
+  if (!strategy?.id) return { queued: 0, skipped: alerts.length };
+
+  const strategyRow = strategy as StrategyLookup;
+  const nowIso = new Date().toISOString();
+  const signals = alerts.map((alert) => {
+    const triggerPrice = alert.current_price;
+    return {
+      strategy_id: strategyRow.id,
+      source: "chanakya_bullish",
+      instrument_id: alert.instrument_id,
+      side: "long",
+      signal_time: nowIso,
+      trigger_price: Number(triggerPrice.toFixed(4)),
+      stop_loss_price: Number((triggerPrice * 0.97).toFixed(4)),
+      target_price: Number((triggerPrice * 1.06).toFixed(4)),
+      timeframe: "1d",
+      metadata: {
+        alert_dedupe_key: alert.dedupe_key,
+        alert_title: alert.title,
+        volume_multiplier: alert.volume_multiplier,
+        timeframe_alignment: alert.timeframe_alignment,
+        source_system: "market_sniper_chanakya",
+      },
+    };
+  });
+
+  const { data: existingSignals, error: existingSignalsError } = await supabase
+    .from("bot_trade_signals")
+    .select("metadata")
+    .in("metadata->>alert_dedupe_key", signalKeys)
+    .in("status", ["pending", "shadow_tracked", "accepted"]);
+  if (existingSignalsError) {
+    return { queued: 0, skipped: alerts.length, error: existingSignalsError.message };
+  }
+
+  const existingSignalKeys = new Set(
+    (existingSignals ?? [])
+      .map((row: { metadata: Record<string, unknown> }) => row.metadata?.alert_dedupe_key)
+      .filter((key): key is string => typeof key === "string"),
+  );
+  const missingSignals = signals.filter((signal) =>
+    !existingSignalKeys.has(signal.metadata.alert_dedupe_key as string)
+  );
+
+  if (missingSignals.length === 0) return { queued: 0, skipped: alerts.length };
+
+  let queued = 0;
+  for (const signal of missingSignals) {
+    const { error } = await supabase.from("bot_trade_signals").insert(signal);
+    if (error) {
+      const isDuplicateRace = "code" in error && error.code === "23505";
+      if (isDuplicateRace) continue;
+      return { queued, skipped: alerts.length - queued, error: error.message };
+    }
+    queued++;
+  }
+
+  return { queued, skipped: alerts.length - queued };
+
+  return { queued: missingSignals.length, skipped: alerts.length - missingSignals.length };
 }
 
 // ---------------------------------------------------------------------------
@@ -477,11 +563,15 @@ Deno.serve(async (req) => {
   if (upsertErr) return Response.json({ error: upsertErr.message }, { status: 500 });
 
   if (newAlerts.length) await sendTelegram(newAlerts as unknown as Record<string, unknown>[]);
+  const botQueue = await enqueueBotSignals(supabase, alerts);
 
   return Response.json({
     upserted: alerts.length,
     new_alerts: newAlerts.length,
     matched: matched.length,
+    bot_signals_queued: botQueue.queued,
+    bot_signals_skipped: botQueue.skipped,
+    bot_signal_error: botQueue.error ?? null,
     trading_date: today,
     symbols: alerts.map((a) => a.title.split(" ")[0]),
   });

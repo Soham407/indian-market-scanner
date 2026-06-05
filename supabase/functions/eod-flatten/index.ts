@@ -7,6 +7,7 @@ const EOD_WINDOW_MINUTES = 20;             // run up to 3:35 PM
 const DAILY_LOSS_CIRCUIT_BREAKER = -3000;  // ₹3,000
 const BROKERAGE_PER_TRADE = 40;            // ₹20 per leg × 2
 const STATUTORY_FEE_PCT = 0.0005;          // 0.05%
+const EOD_EXIT_SLIPPAGE_PCT = 0.0005;      // 0.05%
 
 function istMinutesSinceMidnight(now = new Date()): number {
   const ist = new Date(now.getTime() + 330 * 60 * 1000);
@@ -43,7 +44,7 @@ Deno.serve(async () => {
   // -------------------------------------------------------------------------
   const { data: openTrades, error: tradesError } = await supabase
     .from("bot_paper_trades")
-    .select("id,instrument_id,side,entry_price,shares,stop_loss_price,target_price,risk_amount,instruments(symbol,name,last_price)")
+    .select("id,instrument_id,side,entry_price,entry_time,shares,stop_loss_price,target_price,risk_amount,instruments(symbol,name,last_price)")
     .eq("status", "open");
 
   if (tradesError) {
@@ -63,7 +64,9 @@ Deno.serve(async () => {
       .order("candle_open_at", { ascending: false })
       .limit(1);
 
-    const inst = trade.instruments as { symbol: string; name: string; last_price: number | null } | null;
+    const inst = Array.isArray(trade.instruments)
+      ? trade.instruments[0]
+      : trade.instruments as { symbol: string; name: string; last_price: number | null } | null;
     const eodPrice: number | null =
       (candles && candles.length > 0 ? candles[0].close : null)
       ?? inst?.last_price
@@ -71,17 +74,21 @@ Deno.serve(async () => {
 
     if (!eodPrice || eodPrice <= 0) continue;
 
-    const grossPnl = trade.side === "long"
-      ? (eodPrice - trade.entry_price) * trade.shares
-      : (trade.entry_price - eodPrice) * trade.shares;
+    const exitPriceWithSlippage = trade.side === "long"
+      ? eodPrice * (1 - EOD_EXIT_SLIPPAGE_PCT)
+      : eodPrice * (1 + EOD_EXIT_SLIPPAGE_PCT);
 
-    const statutoryCharges = Math.abs(eodPrice * trade.shares * STATUTORY_FEE_PCT);
+    const grossPnl = trade.side === "long"
+      ? (exitPriceWithSlippage - trade.entry_price) * trade.shares
+      : (trade.entry_price - exitPriceWithSlippage) * trade.shares;
+
+    const statutoryCharges = Math.abs(exitPriceWithSlippage * trade.shares * STATUTORY_FEE_PCT);
     const netPnl = grossPnl - statutoryCharges - BROKERAGE_PER_TRADE;
 
     const { error: updateError } = await supabase
       .from("bot_paper_trades")
       .update({
-        exit_price: eodPrice,
+        exit_price: exitPriceWithSlippage,
         exit_time: now.toISOString(),
         exit_reason: "eod",           // ← was "eod_flatten" which violates the check constraint
         status: "closed",
@@ -92,7 +99,34 @@ Deno.serve(async () => {
       })
       .eq("id", trade.id);
 
-    if (!updateError) tradesFlattened++;
+    if (!updateError) {
+      const exitTimeIso = now.toISOString();
+      const durationMinutes = Math.max(
+        0,
+        Math.round((new Date(exitTimeIso).getTime() - new Date(trade.entry_time).getTime()) / 60000),
+      );
+      const rMultiple = trade.risk_amount > 0 ? netPnl / trade.risk_amount : null;
+
+      const { error: outcomeError } = await supabase
+        .from("bot_signal_outcomes")
+        .update({
+          exit_price: exitPriceWithSlippage,
+          exit_reason: "eod",
+          gross_pnl: grossPnl,
+          net_pnl: netPnl,
+          r_multiple: rMultiple,
+          duration_minutes: durationMinutes,
+          status: "closed",
+          closed_at: exitTimeIso,
+        })
+        .eq("paper_trade_id", trade.id);
+
+      if (outcomeError) {
+        console.error("[eod-flatten] failed to update bot_signal_outcomes:", outcomeError.message);
+      }
+
+      tradesFlattened++;
+    }
   }
 
   // -------------------------------------------------------------------------
@@ -116,7 +150,7 @@ Deno.serve(async () => {
     brokerage: number | null;
     statutory_charges: number | null;
     exit_reason: string | null;
-    instruments: { symbol: string; name: string } | null;
+    instruments: { symbol: string; name: string }[] | { symbol: string; name: string } | null;
   };
 
   const trades = (closedToday ?? []) as ClosedTrade[];
@@ -143,8 +177,11 @@ Deno.serve(async () => {
   // -------------------------------------------------------------------------
   if (totalNet <= DAILY_LOSS_CIRCUIT_BREAKER) {
     await supabase
-      .from("bot_config")
-      .update({ trading_enabled: false, circuit_breaker_triggered_at: now.toISOString() })
+      .from("bot_settings")
+      .update({
+        trading_enabled: false,
+        kill_switch_reason: `Daily loss ₹${totalNet.toFixed(0)} exceeded ₹3,000 limit`,
+      })
       .eq("id", 1);
 
     await sendTelegramNotification({

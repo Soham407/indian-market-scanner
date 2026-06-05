@@ -96,13 +96,13 @@ Deno.serve(async () => {
 
   // Check trading status
   const { data: config } = await supabase
-    .from("bot_config")
-    .select("trading_enabled, circuit_breaker_triggered_at")
+    .from("bot_settings")
+    .select("trading_enabled, kill_switch_reason")
     .eq("id", 1)
     .single();
 
   const tradingEnabled = config?.trading_enabled ?? true;
-  const circuitBreakerActive = !!config?.circuit_breaker_triggered_at;
+  const circuitBreakerActive = !tradingEnabled && !!config?.kill_switch_reason;
 
   // Count open trades
   const { data: openTrades, count } = await supabase

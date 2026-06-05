@@ -21,6 +21,28 @@ type Instrument = {
   or_date: string | null;
 };
 
+type AlertCandidate = {
+  instrument_id: string;
+  dedupe_key: string;
+  direction: "bullish" | "bearish";
+  title: string;
+  trigger_price: number;
+  current_price: number;
+  take_profit_price?: number | null;
+  swept_level: number;
+  swept_level_name: string;
+  volume_multiplier: number;
+  conviction_score: number;
+  score_factors: unknown[];
+  timeframe_alignment: Record<string, unknown>;
+  expires_at: string;
+};
+
+type StrategyLookup = {
+  id: string;
+  name: string;
+};
+
 // ---------------------------------------------------------------------------
 // Time helpers (IST = UTC+5:30)
 // ---------------------------------------------------------------------------
@@ -80,6 +102,112 @@ function convictionScore(distancePct: number, hasVolumeExpansion: boolean): numb
   return Math.min(95, 55 + (hasVolumeExpansion ? 20 : 0) + Math.min(20, Math.round(distancePct * 5)));
 }
 
+function patternFromDedupeKey(dedupeKey: string): string | null {
+  const [, pattern] = dedupeKey.split(":");
+  return pattern || null;
+}
+
+function toBotSignal(
+  alert: AlertCandidate,
+  strategyId: string,
+  nowIso: string,
+) {
+  const side = alert.direction === "bearish" ? "short" : "long";
+  const triggerPrice = alert.current_price;
+  const fallbackStop = side === "short" ? triggerPrice * 1.01 : triggerPrice * 0.99;
+  const fallbackTarget = side === "short" ? triggerPrice * 0.985 : triggerPrice * 1.015;
+  const rawTarget = alert.take_profit_price;
+  const targetPrice = rawTarget && (
+      (side === "short" && rawTarget < triggerPrice) ||
+      (side === "long" && rawTarget > triggerPrice)
+    )
+    ? rawTarget
+    : fallbackTarget;
+
+  return {
+    strategy_id: strategyId,
+    source: patternFromDedupeKey(alert.dedupe_key) ?? "market_sniper_alert",
+    instrument_id: alert.instrument_id,
+    side,
+    signal_time: nowIso,
+    trigger_price: Number(triggerPrice.toFixed(4)),
+    stop_loss_price: Number(fallbackStop.toFixed(4)),
+    target_price: Number(targetPrice.toFixed(4)),
+    timeframe: "1m",
+    metadata: {
+      alert_dedupe_key: alert.dedupe_key,
+      alert_title: alert.title,
+      swept_level: alert.swept_level,
+      swept_level_name: alert.swept_level_name,
+      volume_multiplier: alert.volume_multiplier,
+      timeframe_alignment: alert.timeframe_alignment,
+      source_system: "market_sniper",
+    },
+  };
+}
+
+async function enqueueBotSignals(
+  supabase: ReturnType<typeof createServiceClient>,
+  alerts: AlertCandidate[],
+): Promise<{ queued: number; skipped: number; error?: string }> {
+  if (alerts.length === 0) return { queued: 0, skipped: 0 };
+
+  const patterns = [...new Set(alerts.map((alert) => patternFromDedupeKey(alert.dedupe_key)).filter((pattern): pattern is string => !!pattern))];
+  const { data: strategies, error: strategyError } = await supabase
+    .from("bot_strategies")
+    .select("id,name")
+    .in("name", patterns)
+    .eq("enabled", true)
+    .neq("lifecycle_status", "disabled");
+
+  if (strategyError) return { queued: 0, skipped: alerts.length, error: strategyError.message };
+
+  const strategyByName = new Map((strategies ?? []).map((strategy: StrategyLookup) => [strategy.name, strategy.id]));
+  const nowIso = new Date().toISOString();
+  const signals = alerts.flatMap((alert) => {
+    const pattern = patternFromDedupeKey(alert.dedupe_key);
+    const strategyId = pattern ? strategyByName.get(pattern) : undefined;
+    return strategyId ? [toBotSignal(alert, strategyId, nowIso)] : [];
+  });
+
+  if (signals.length === 0) return { queued: 0, skipped: alerts.length };
+
+  const { data: existingSignals, error: existingSignalsError } = await supabase
+    .from("bot_trade_signals")
+    .select("metadata")
+    .in("metadata->>alert_dedupe_key", signalKeys)
+    .in("status", ["pending", "shadow_tracked", "accepted"]);
+  if (existingSignalsError) {
+    return { queued: 0, skipped: alerts.length, error: existingSignalsError.message };
+  }
+
+  const existingSignalKeys = new Set(
+    (existingSignals ?? [])
+      .map((row: { metadata: Record<string, unknown> }) => row.metadata?.alert_dedupe_key)
+      .filter((key): key is string => typeof key === "string"),
+  );
+  const missingSignals = signals.filter((signal) =>
+    !existingSignalKeys.has(signal.metadata.alert_dedupe_key as string)
+  );
+
+  if (missingSignals.length === 0) return { queued: 0, skipped: alerts.length };
+
+  let queued = 0;
+  for (const signal of missingSignals) {
+    const { error } = await supabase.from("bot_trade_signals").insert(signal);
+    if (error) {
+      const isDuplicateRace = "code" in error && error.code === "23505";
+      if (isDuplicateRace) continue;
+      return { queued, skipped: alerts.length - queued, error: error.message };
+    }
+    queued++;
+  }
+
+  return { queued, skipped: alerts.length - queued };
+
+  return { queued: missingSignals.length, skipped: alerts.length - missingSignals.length };
+}
+
 // ---------------------------------------------------------------------------
 // Main handler
 // ---------------------------------------------------------------------------
@@ -109,7 +237,7 @@ Deno.serve(async () => {
   if (error) return Response.json({ error: error.message }, { status: 500 });
 
   const today = todayIst();
-  const alerts = (instruments ?? []).flatMap((inst: Instrument) => {
+  const alerts = ((instruments ?? []) as unknown as Instrument[]).flatMap((inst) => {
     const bearish = buildBearishAlert(inst, today);
     const bullish = buildBullishAlert(inst, today);
     const orBearish = buildOrTrapBearish(inst, today);
@@ -117,7 +245,7 @@ Deno.serve(async () => {
     const orBreakBullish = buildOrBreakoutBullish(inst, today);
     const orBreakBearish = buildOrBreakoutBearish(inst, today);
     return [bearish, bullish, orBearish, orBullish, orBreakBullish, orBreakBearish].filter(Boolean);
-  });
+  }) as AlertCandidate[];
 
   if (alerts.length === 0) return Response.json({ inserted: 0 });
 
@@ -140,7 +268,15 @@ Deno.serve(async () => {
     await sendTelegramAlerts(newAlerts);
   }
 
-  return Response.json({ upserted: alerts.length, new_alerts: newAlerts.length });
+  const botQueue = await enqueueBotSignals(supabase, alerts as AlertCandidate[]);
+
+  return Response.json({
+    upserted: alerts.length,
+    new_alerts: newAlerts.length,
+    bot_signals_queued: botQueue.queued,
+    bot_signals_skipped: botQueue.skipped,
+    bot_signal_error: botQueue.error ?? null,
+  });
 });
 
 // ---------------------------------------------------------------------------
