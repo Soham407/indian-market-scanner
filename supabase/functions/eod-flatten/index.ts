@@ -7,6 +7,7 @@ const EOD_WINDOW_MINUTES = 20;             // run up to 3:35 PM
 const DAILY_LOSS_CIRCUIT_BREAKER = -3000;  // ₹3,000
 const BROKERAGE_PER_TRADE = 40;            // ₹20 per leg × 2
 const STATUTORY_FEE_PCT = 0.0005;          // 0.05%
+const EOD_EXIT_SLIPPAGE_PCT = 0.0005;      // 0.05%
 
 function istMinutesSinceMidnight(now = new Date()): number {
   const ist = new Date(now.getTime() + 330 * 60 * 1000);
@@ -73,17 +74,21 @@ Deno.serve(async () => {
 
     if (!eodPrice || eodPrice <= 0) continue;
 
-    const grossPnl = trade.side === "long"
-      ? (eodPrice - trade.entry_price) * trade.shares
-      : (trade.entry_price - eodPrice) * trade.shares;
+    const exitPriceWithSlippage = trade.side === "long"
+      ? eodPrice * (1 - EOD_EXIT_SLIPPAGE_PCT)
+      : eodPrice * (1 + EOD_EXIT_SLIPPAGE_PCT);
 
-    const statutoryCharges = Math.abs(eodPrice * trade.shares * STATUTORY_FEE_PCT);
+    const grossPnl = trade.side === "long"
+      ? (exitPriceWithSlippage - trade.entry_price) * trade.shares
+      : (trade.entry_price - exitPriceWithSlippage) * trade.shares;
+
+    const statutoryCharges = Math.abs(exitPriceWithSlippage * trade.shares * STATUTORY_FEE_PCT);
     const netPnl = grossPnl - statutoryCharges - BROKERAGE_PER_TRADE;
 
     const { error: updateError } = await supabase
       .from("bot_paper_trades")
       .update({
-        exit_price: eodPrice,
+        exit_price: exitPriceWithSlippage,
         exit_time: now.toISOString(),
         exit_reason: "eod",           // ← was "eod_flatten" which violates the check constraint
         status: "closed",
@@ -105,7 +110,7 @@ Deno.serve(async () => {
       await supabase
         .from("bot_signal_outcomes")
         .update({
-          exit_price: eodPrice,
+          exit_price: exitPriceWithSlippage,
           exit_reason: "eod",
           gross_pnl: grossPnl,
           net_pnl: netPnl,

@@ -82,13 +82,11 @@ Deno.serve(async () => {
     if (exitPrice && exitReason) {
       // Apply exit slippage
       const slippageMult = exitReason === "stop" ? 0.0010 : 0.0005; // 0.10% stop, 0.05% target
-      const slippageAdjustment = trade.side === "long"
-        ? exitPrice * slippageMult // Against you on exit
-        : exitPrice * slippageMult;
+      const slippageAdjustment = exitPrice * slippageMult;
 
       const exitPriceWithSlippage = trade.side === "long"
-        ? exitPrice + slippageAdjustment
-        : exitPrice - slippageAdjustment;
+        ? exitPrice - slippageAdjustment
+        : exitPrice + slippageAdjustment;
 
       // Calculate P&L
       const grossPnl = trade.side === "long"

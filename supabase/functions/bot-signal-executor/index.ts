@@ -70,6 +70,7 @@ Deno.serve(async () => {
     const { data: processedSignals, error: processedSignalsError } = await supabase
       .from("bot_trade_signals")
       .select("strategy_id,instrument_id")
+      .eq("status", "shadow_tracked")
       .gte("processed_at", dayStartIso)
       .lt("processed_at", nowIso);
 
@@ -194,7 +195,7 @@ Deno.serve(async () => {
         continue;
       }
 
-      const { error: paperTradeError } = await supabase.rpc("bot_accept_paper_signal", {
+      const { data: paperTradeId, error: paperTradeError } = await supabase.rpc("bot_accept_paper_signal", {
         p_signal_id: signal.id,
         p_strategy_id: signal.strategy_id,
         p_instrument_id: signal.instrument_id,
@@ -213,6 +214,10 @@ Deno.serve(async () => {
           "[bot-signal-executor] failed to accept paper signal:",
           paperTradeError.message,
         );
+        continue;
+      }
+      if (!paperTradeId) {
+        console.error("[bot-signal-executor] signal was already processed before paper acceptance:", signal.id);
         continue;
       }
 

@@ -140,8 +140,6 @@ function toBotSignal(
       swept_level: alert.swept_level,
       swept_level_name: alert.swept_level_name,
       volume_multiplier: alert.volume_multiplier,
-      conviction_score: alert.conviction_score,
-      score_factors: alert.score_factors,
       timeframe_alignment: alert.timeframe_alignment,
       source_system: "market_sniper",
     },
@@ -174,10 +172,38 @@ async function enqueueBotSignals(
 
   if (signals.length === 0) return { queued: 0, skipped: alerts.length };
 
-  const { error } = await supabase.from("bot_trade_signals").insert(signals);
-  if (error) return { queued: 0, skipped: alerts.length, error: error.message };
+  const signalKeys = signals.map((signal) => signal.metadata.alert_dedupe_key as string);
+  const { data: existingSignals, error: existingSignalsError } = await supabase
+    .from("bot_trade_signals")
+    .select("metadata")
+    .in("metadata->>alert_dedupe_key", signalKeys);
 
-  return { queued: signals.length, skipped: alerts.length - signals.length };
+  if (existingSignalsError) {
+    return { queued: 0, skipped: alerts.length, error: existingSignalsError.message };
+  }
+
+  const existingSignalKeys = new Set(
+    (existingSignals ?? [])
+      .map((row: { metadata: Record<string, unknown> }) => row.metadata?.alert_dedupe_key)
+      .filter((key): key is string => typeof key === "string"),
+  );
+  const missingSignals = signals.filter((signal) =>
+    !existingSignalKeys.has(signal.metadata.alert_dedupe_key as string)
+  );
+
+  if (missingSignals.length === 0) return { queued: 0, skipped: alerts.length };
+
+  const { error } = await supabase.from("bot_trade_signals").insert(missingSignals);
+  if (error) {
+    const isDuplicateRace = "code" in error && error.code === "23505";
+    return {
+      queued: 0,
+      skipped: alerts.length,
+      error: isDuplicateRace ? undefined : error.message,
+    };
+  }
+
+  return { queued: missingSignals.length, skipped: alerts.length - missingSignals.length };
 }
 
 // ---------------------------------------------------------------------------
@@ -240,7 +266,7 @@ Deno.serve(async () => {
     await sendTelegramAlerts(newAlerts);
   }
 
-  const botQueue = await enqueueBotSignals(supabase, newAlerts as AlertCandidate[]);
+  const botQueue = await enqueueBotSignals(supabase, alerts as AlertCandidate[]);
 
   return Response.json({
     upserted: alerts.length,
