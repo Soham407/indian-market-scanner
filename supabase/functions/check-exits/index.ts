@@ -18,7 +18,7 @@ Deno.serve(async () => {
   const { data: openTrades, error: tradesError } = await supabase
     .from("bot_paper_trades")
     .select(
-      "id,instrument_id,side,entry_price,stop_loss_price,target_price,shares,risk_amount,instruments(symbol,name,last_price)",
+      "id,instrument_id,side,entry_price,entry_time,stop_loss_price,target_price,shares,risk_amount,instruments(symbol,name,last_price)",
     )
     .eq("status", "open");
 
@@ -37,7 +37,9 @@ Deno.serve(async () => {
       .limit(1);
 
     // Fall back to instruments.last_price when no candles are available yet
-    const instrument = trade.instruments as { symbol: string; name: string; last_price: number | null } | null;
+    const instrument = Array.isArray(trade.instruments)
+      ? trade.instruments[0]
+      : trade.instruments as { symbol: string; name: string; last_price: number | null } | null;
     let candle: { high: number; low: number; close: number; candle_open_at: string };
 
     if (!candleError && candles && candles.length > 0) {
@@ -112,6 +114,26 @@ Deno.serve(async () => {
         .eq("id", trade.id);
 
       if (!updateError) {
+        const durationMinutes = Math.max(
+          0,
+          Math.round((new Date(candle.candle_open_at).getTime() - new Date(trade.entry_time).getTime()) / 60000),
+        );
+        const rMultiple = trade.risk_amount > 0 ? netPnl / trade.risk_amount : null;
+
+        await supabase
+          .from("bot_signal_outcomes")
+          .update({
+            exit_price: exitPriceWithSlippage,
+            exit_reason: exitReason,
+            gross_pnl: grossPnl,
+            net_pnl: netPnl,
+            r_multiple: rMultiple,
+            duration_minutes: durationMinutes,
+            status: "closed",
+            closed_at: candle.candle_open_at,
+          })
+          .eq("paper_trade_id", trade.id);
+
         exitsProcessed++;
         await sendTelegramNotification({
           type: "exit",

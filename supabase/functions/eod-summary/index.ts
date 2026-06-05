@@ -56,7 +56,7 @@ Deno.serve(async () => {
     brokerage: number | null;
     statutory_charges: number | null;
     exit_reason: string | null;
-    instruments: { symbol: string; name: string } | null;
+    instruments: { symbol: string; name: string }[] | { symbol: string; name: string } | null;
   };
 
   const trades = (closedToday ?? []) as Trade[];
@@ -79,10 +79,10 @@ Deno.serve(async () => {
 
   const circuitTripped = totalNet <= DAILY_LOSS_CIRCUIT_BREAKER;
 
-  // Check bot_config to see if circuit breaker is already active
+  // Check bot_settings to see if circuit breaker is already active
   const { data: config } = await supabase
-    .from("bot_config")
-    .select("trading_enabled")
+    .from("bot_settings")
+    .select("trading_enabled, kill_switch_reason")
     .eq("id", 1)
     .single();
   const tradingEnabled = config?.trading_enabled ?? true;
@@ -94,7 +94,8 @@ Deno.serve(async () => {
 
   // Trade log — cap at 20 lines to stay within Telegram 4096-char limit
   const tradeLines = trades.slice(0, 20).map((t) => {
-    const sym    = t.instruments?.symbol ?? "???";
+    const tradeInst = Array.isArray(t.instruments) ? t.instruments[0] : t.instruments;
+    const sym    = tradeInst?.symbol ?? "???";
     const side   = t.side === "long" ? "L" : "S";
     const pnl    = t.net_pnl ?? 0;
     const reason = t.exit_reason ?? "eod";
@@ -105,19 +106,24 @@ Deno.serve(async () => {
   }
 
   const openSection = stillOpen && stillOpen.length > 0
-    ? (stillOpen as { instruments: { symbol: string } | null; side: string }[])
-        .map((t) => `  ⚠️ ${t.instruments?.symbol ?? "?"} ${t.side} — STILL OPEN`)
+    ? (stillOpen as { instruments: { symbol: string }[] | { symbol: string } | null; side: string }[])
+        .map((t) => {
+          const inst = Array.isArray(t.instruments) ? t.instruments[0] : t.instruments;
+          return `  ⚠️ ${inst?.symbol ?? "?"} ${t.side} — STILL OPEN`;
+        })
         .join("\n")
     : "  None — all squared off ✅";
 
   const tomorrowLine = !tradingEnabled
-    ? "⛔ Circuit breaker active — bot PAUSED\n  Re-enable: set trading_enabled=true in bot_config"
+    ? "⛔ Circuit breaker active — bot PAUSED\n  Re-enable: set trading_enabled=true in bot_settings"
     : "✅ Bot resumes at 9:15 AM IST";
 
   const bestTrade  = trades[0];
   const worstTrade = trades[trades.length - 1];
-  const bestLine  = bestTrade  ? `🏆 Best:   ${bestTrade.instruments?.symbol}  ${rs(bestTrade.net_pnl ?? 0)}` : "";
-  const worstLine = worstTrade ? `💀 Worst:  ${worstTrade.instruments?.symbol}  ${rs(worstTrade.net_pnl ?? 0)}` : "";
+  const bestTradeInst = bestTrade ? (Array.isArray(bestTrade.instruments) ? bestTrade.instruments[0] : bestTrade.instruments) : null;
+  const worstTradeInst = worstTrade ? (Array.isArray(worstTrade.instruments) ? worstTrade.instruments[0] : worstTrade.instruments) : null;
+  const bestLine  = bestTrade  ? `🏆 Best:   ${bestTradeInst?.symbol}  ${rs(bestTrade.net_pnl ?? 0)}` : "";
+  const worstLine = worstTrade ? `💀 Worst:  ${worstTradeInst?.symbol}  ${rs(worstTrade.net_pnl ?? 0)}` : "";
 
   const msg = [
     `📊 Day Summary — ${istDateDisplay(todayIst)}`,

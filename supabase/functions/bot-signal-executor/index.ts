@@ -64,6 +64,16 @@ Deno.serve(async () => {
       return Response.json({ error: todaysTradesError.message }, { status: 500 });
     }
 
+    const { data: processedSignals, error: processedSignalsError } = await supabase
+      .from("bot_trade_signals")
+      .select("strategy_id,instrument_id")
+      .gte("processed_at", dayStartIso)
+      .lt("processed_at", nowIso);
+
+    if (processedSignalsError) {
+      return Response.json({ error: processedSignalsError.message }, { status: 500 });
+    }
+
     const { data: signals, error: signalsError } = await supabase
       .from("bot_trade_signals")
       .select(
@@ -80,8 +90,28 @@ Deno.serve(async () => {
     let accepted = 0;
     let rejected = 0;
     let shadowTracked = 0;
+    let currentOpenPositionCount = openTrades?.length ?? 0;
+    let currentTradesTodayCount = todaysTrades?.length ?? 0;
+    const seenSignalKeys = new Set<string>(
+      (processedSignals ?? []).map((signal) => `${signal.strategy_id}:${signal.instrument_id}:${dayStartIso.slice(0, 10)}`),
+    );
+
+    const rejectSignal = async (signalId: string, reason: string) => {
+      const { error } = await supabase
+        .from("bot_trade_signals")
+        .update({
+          status: "rejected",
+          rejection_reason: reason,
+          processed_at: nowIso,
+        })
+        .eq("id", signalId);
+      if (error) {
+        throw new Error(`failed to reject signal ${signalId}: ${error.message}`);
+      }
+    };
 
     for (const signal of (signals ?? []) as SignalRow[]) {
+      const signalKey = `${signal.strategy_id}:${signal.instrument_id}:${dayStartIso.slice(0, 10)}`;
       const { data: strategy, error: strategyError } = await supabase
         .from("bot_strategies")
         .select("id,name,enabled,lifecycle_status,risk_multiplier,max_risk_multiplier")
@@ -89,14 +119,7 @@ Deno.serve(async () => {
         .maybeSingle();
 
       if (strategyError || !strategy) {
-        await supabase
-          .from("bot_trade_signals")
-          .update({
-            status: "rejected",
-            rejection_reason: strategyError?.message ?? "strategy not found",
-            processed_at: nowIso,
-          })
-          .eq("id", signal.id);
+        await rejectSignal(signal.id, strategyError?.message ?? "strategy not found");
         rejected++;
         continue;
       }
@@ -111,14 +134,7 @@ Deno.serve(async () => {
         .maybeSingle();
 
       if (candleError) {
-        await supabase
-          .from("bot_trade_signals")
-          .update({
-            status: "rejected",
-            rejection_reason: candleError.message,
-            processed_at: nowIso,
-          })
-          .eq("id", signal.id);
+        await rejectSignal(signal.id, candleError.message);
         rejected++;
         continue;
       }
@@ -126,15 +142,15 @@ Deno.serve(async () => {
       const hasDuplicateForInstrumentToday = (todaysTrades ?? []).some((trade) =>
         trade.strategy_id === signal.strategy_id &&
         trade.instrument_id === signal.instrument_id
-      );
+      ) || seenSignalKeys.has(signalKey);
 
       const context: ExecutorContext = {
         tradingEnabled,
         baseRiskAmount: BASE_RISK_AMOUNT,
         maxConcurrentPositions: MAX_CONCURRENT_POSITIONS,
         maxTradesPerDay: MAX_TRADES_PER_DAY,
-        openPositionCount: openTrades?.length ?? 0,
-        tradesTodayCount: todaysTrades?.length ?? 0,
+        openPositionCount: currentOpenPositionCount,
+        tradesTodayCount: currentTradesTodayCount,
         hasDuplicateForInstrumentToday,
         latestPrice: latestCandle?.close === null || latestCandle?.close === undefined
           ? null
@@ -145,130 +161,59 @@ Deno.serve(async () => {
       const decision = buildExecutorDecision(signal, strategy as StrategyRow, context);
 
       if (decision.action === "reject") {
-        await supabase
-          .from("bot_trade_signals")
-          .update({
-            status: "rejected",
-            rejection_reason: decision.reason,
-            processed_at: nowIso,
-          })
-          .eq("id", signal.id);
+        await rejectSignal(signal.id, decision.reason);
         rejected++;
         continue;
       }
 
       if (decision.action === "shadow") {
-        const { error: outcomeError } = await supabase
-          .from("bot_signal_outcomes")
-          .insert({
-            signal_id: signal.id,
-            mode: "shadow",
-            entry_price: decision.entryPrice,
-            status: "open",
-            opened_at: nowIso,
-          });
+        const { error: shadowError } = await supabase.rpc("bot_track_shadow_signal", {
+          p_signal_id: signal.id,
+          p_entry_price: decision.entryPrice,
+          p_processed_at: nowIso,
+        });
 
-        if (outcomeError) {
-          await supabase
-            .from("bot_trade_signals")
-            .update({
-              status: "rejected",
-              rejection_reason: outcomeError.message,
-              processed_at: nowIso,
-            })
-            .eq("id", signal.id);
-          rejected++;
+        if (shadowError) {
+          console.error(
+            "[bot-signal-executor] failed to track shadow signal:",
+            shadowError.message,
+          );
           continue;
         }
-
-        await supabase
-          .from("bot_trade_signals")
-          .update({
-            status: "shadow_tracked",
-            processed_at: nowIso,
-          })
-          .eq("id", signal.id);
+        seenSignalKeys.add(signalKey);
         shadowTracked++;
         continue;
       }
 
       if (!tradingEnabled) {
-        await supabase
-          .from("bot_trade_signals")
-          .update({
-            status: "rejected",
-            rejection_reason: "trading disabled",
-            processed_at: nowIso,
-          })
-          .eq("id", signal.id);
+        await rejectSignal(signal.id, "trading disabled");
         rejected++;
         continue;
       }
 
-      const { data: trade, error: tradeError } = await supabase
-        .from("bot_paper_trades")
-        .insert({
-          strategy_id: signal.strategy_id,
-          instrument_id: signal.instrument_id,
-          side: signal.side,
-          entry_price: decision.entryPrice,
-          entry_time: nowIso,
-          entry_slippage_pct: decision.entrySlippagePct,
-          stop_loss_price: decision.stopLossPrice,
-          target_price: decision.targetPrice,
-          shares: decision.shares,
-          status: "open",
-          risk_amount: decision.riskAmount,
-        })
-        .select("id")
-        .single();
+      const { error: paperTradeError } = await supabase.rpc("bot_accept_paper_signal", {
+        p_signal_id: signal.id,
+        p_strategy_id: signal.strategy_id,
+        p_instrument_id: signal.instrument_id,
+        p_side: signal.side,
+        p_entry_price: decision.entryPrice,
+        p_entry_slippage_pct: decision.entrySlippagePct,
+        p_stop_loss_price: decision.stopLossPrice,
+        p_target_price: decision.targetPrice,
+        p_shares: decision.shares,
+        p_risk_amount: decision.riskAmount,
+        p_processed_at: nowIso,
+      });
 
-      if (tradeError || !trade) {
-        await supabase
-          .from("bot_trade_signals")
-          .update({
-            status: "rejected",
-            rejection_reason: tradeError?.message ?? "trade insert failed",
-            processed_at: nowIso,
-          })
-          .eq("id", signal.id);
-        rejected++;
+      if (paperTradeError) {
+        console.error(
+          "[bot-signal-executor] failed to accept paper signal:",
+          paperTradeError.message,
+        );
         continue;
       }
 
-      const { error: outcomeError } = await supabase
-        .from("bot_signal_outcomes")
-        .insert({
-          signal_id: signal.id,
-          paper_trade_id: trade.id,
-          mode: "paper_live",
-          entry_price: decision.entryPrice,
-          status: "open",
-          opened_at: nowIso,
-        });
-
-      if (outcomeError) {
-        await supabase
-          .from("bot_trade_signals")
-          .update({
-            status: "rejected",
-            rejection_reason: outcomeError.message,
-            processed_at: nowIso,
-          })
-          .eq("id", signal.id);
-        rejected++;
-        continue;
-      }
-
-      await supabase
-        .from("bot_trade_signals")
-        .update({
-          status: "accepted",
-          processed_at: nowIso,
-        })
-        .eq("id", signal.id);
-
-      await sendTelegramNotification({
+      const telegramResult = await sendTelegramNotification({
         type: "entry",
         symbol: signal.source,
         side: signal.side,
@@ -280,7 +225,14 @@ Deno.serve(async () => {
         timestamp: nowIso,
       });
 
+      if (!telegramResult.success) {
+        console.error("[bot-signal-executor] telegram notification failed:", telegramResult.error);
+      }
+
       accepted++;
+      currentOpenPositionCount += 1;
+      currentTradesTodayCount += 1;
+      seenSignalKeys.add(signalKey);
     }
 
     return Response.json({

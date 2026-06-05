@@ -1,14 +1,10 @@
 import { createServiceClient } from "../_shared/supabase.ts";
 import { getMarketSessionStatus } from "../_shared/market-hours.ts";
-import { sendTelegramNotification } from "../_shared/telegram.ts";
 
 const EXCHANGE = "NSE";
 const OR_WINDOW_START   = 9 * 60 + 15;  // 9:15 IST
 const OR_WINDOW_END     = 9 * 60 + 30;  // 9:30 IST
 const BREAKOUT_CUTOFF   = 12 * 60 + 30; // 12:30 IST — no new entries after this
-const MAX_TRADES_PER_DAY = 6;           // cap daily friction costs
-const RISK_PER_TRADE    = 1000;         // ₹1,000 per trade
-const TARGET_MULTIPLIER = 1.5;          // target = entry ± OR_range × 1.5
 const BREAKOUT_BUFFER   = 0.003;        // 0.3% above/below OR before triggering
 const MIN_OR_RANGE_PCT  = 0.003;        // OR must be at least 0.3% of price
 const MAX_OR_RANGE_PCT  = 0.05;         // OR must be at most 5% of price
@@ -56,6 +52,12 @@ type BotInstrument = {
   session_volume: number | null;
 };
 
+type StrategyRow = {
+  id: string;
+  enabled: boolean;
+  lifecycle_status: string;
+};
+
 Deno.serve(async () => {
   const session = getMarketSessionStatus();
   if (!session.isOpen) {
@@ -65,19 +67,40 @@ Deno.serve(async () => {
   const supabase = createServiceClient();
   const now = new Date();
   const todayIst = istDateStr(now);
+  const nowIso = now.toISOString();
 
   // Resolve strategy UUID once
-  const { data: strategyRow } = await supabase
+  const { data: strategyRow, error: strategyError } = await supabase
     .from("bot_strategies")
-    .select("id")
+    .select("id,enabled,lifecycle_status")
     .eq("name", "orb_breakout")
     .eq("status", "active")
-    .single();
+    .maybeSingle();
+
+  if (strategyError) {
+    return Response.json({ error: strategyError.message, trades_placed: 0 }, { status: 500 });
+  }
 
   if (!strategyRow?.id) {
     return Response.json({ error: "orb_breakout strategy not found", trades_placed: 0 }, { status: 500 });
   }
-  const strategyUuid = strategyRow.id as string;
+  const strategy = strategyRow as StrategyRow;
+  if (!strategy.enabled || strategy.lifecycle_status === "disabled") {
+    return Response.json({ status: "orb_breakout disabled", trades_placed: 0 });
+  }
+  const strategyUuid = strategy.id;
+
+  const { data: botSettings, error: settingsError } = await supabase
+    .from("bot_settings")
+    .select("trading_enabled")
+    .eq("id", 1)
+    .maybeSingle();
+
+  if (settingsError) {
+    return Response.json({ error: settingsError.message, trades_placed: 0 }, { status: 500 });
+  }
+
+  const tradingEnabled = botSettings?.trading_enabled ?? false;
 
   // -------------------------------------------------------------------------
   // Phase 1: Build opening range from 9:15–9:30 candles
@@ -126,18 +149,24 @@ Deno.serve(async () => {
     return Response.json({ status: reason, trades_placed: 0 });
   }
 
-  // Guard: check daily trade cap
-  const { count: tradesToday } = await supabase
-    .from("bot_paper_trades")
-    .select("id", { count: "exact", head: true })
-    .gte("entry_time", `${todayIst}T00:00:00Z`)
-    .lt("entry_time", `${todayIst}T23:59:59Z`);
-
-  if ((tradesToday ?? 0) >= MAX_TRADES_PER_DAY) {
-    return Response.json({ status: `Daily cap of ${MAX_TRADES_PER_DAY} trades reached`, trades_placed: 0 });
+  if (!tradingEnabled) {
+    return Response.json({ status: "Trading disabled", trades_placed: 0 });
   }
 
-  const remaining = MAX_TRADES_PER_DAY - (tradesToday ?? 0);
+  // Guard: check daily trade cap
+  const { count: signalsToday } = await supabase
+    .from("bot_trade_signals")
+    .select("id", { count: "exact", head: true })
+    .eq("strategy_id", strategyUuid)
+    .gte("signal_time", `${todayIst}T00:00:00Z`)
+    .lt("signal_time", `${todayIst}T23:59:59Z`);
+
+  const DAILY_SIGNAL_CAP = 6;
+  if ((signalsToday ?? 0) >= DAILY_SIGNAL_CAP) {
+    return Response.json({ status: `Daily cap of ${DAILY_SIGNAL_CAP} signals reached`, trades_placed: 0 });
+  }
+
+  const remaining = DAILY_SIGNAL_CAP - (signalsToday ?? 0);
 
   const { data: instruments } = await supabase
     .from("instruments")
@@ -150,10 +179,10 @@ Deno.serve(async () => {
   // Minutes elapsed since market open (for per-minute volume estimate)
   const marketMinutesElapsed = Math.max(1, istMinutes(now) - OR_WINDOW_START);
 
-  let tradesPlaced = 0;
+  let signalsPlaced = 0;
 
   for (const inst of instruments as BotInstrument[]) {
-    if (tradesPlaced >= remaining) break;
+    if (signalsPlaced >= remaining) break;
     if (!inst.or_high || !inst.or_low || inst.or_date !== todayIst) continue;
 
     // --- OR quality filter: ignore too-tight or too-wide ranges ---
@@ -166,14 +195,15 @@ Deno.serve(async () => {
     const avgMinVol = (inst.session_volume ?? 0) / marketMinutesElapsed;
     if (avgMinVol < MIN_AVG_MIN_VOLUME) continue;
 
-    // --- One trade per symbol per day ---
-    const { data: existingTrades } = await supabase
-      .from("bot_paper_trades")
+    // --- One signal per symbol per day ---
+    const { data: existingSignals } = await supabase
+      .from("bot_trade_signals")
       .select("id")
+      .eq("strategy_id", strategyUuid)
       .eq("instrument_id", inst.id)
-      .gte("entry_time", `${todayIst}T00:00:00Z`)
-      .lt("entry_time", `${todayIst}T23:59:59Z`);
-    if (existingTrades && existingTrades.length > 0) continue;
+      .gte("signal_time", `${todayIst}T00:00:00Z`)
+      .lt("signal_time", `${todayIst}T23:59:59Z`);
+    if (existingSignals && existingSignals.length > 0) continue;
 
     // --- Get latest candle for current price ---
     const { data: candles } = await supabase
@@ -193,84 +223,68 @@ Deno.serve(async () => {
 
     // ---- LONG breakout ----
     if (latestClose > longTrigger) {
-      const entryPrice   = latestClose * 1.0005; // 0.05% entry slippage
-      const stopPrice    = inst.or_low;
-      const riskPerShare = entryPrice - stopPrice;
-      if (riskPerShare <= 0) continue;
-      const shares       = Math.floor(RISK_PER_TRADE / riskPerShare);
-      if (shares <= 0) continue;
-      const targetPrice  = entryPrice + orRange * TARGET_MULTIPLIER;
+      const entryPrice = Number((latestClose * 1.0005).toFixed(4));
+      const stopPrice = inst.or_low;
+      const targetPrice = Number((entryPrice + orRange * 1.5).toFixed(4));
 
-      const { error } = await supabase.from("bot_paper_trades").insert({
+      const { error } = await supabase.from("bot_trade_signals").insert({
         strategy_id: strategyUuid,
+        source: "orb_breakout",
         instrument_id: inst.id,
         side: "long",
-        entry_price: entryPrice,
-        entry_time: now.toISOString(),
-        entry_slippage_pct: 0.05,
+        signal_time: nowIso,
+        trigger_price: latestClose,
         stop_loss_price: stopPrice,
         target_price: targetPrice,
-        shares,
-        status: "open",
-        risk_amount: RISK_PER_TRADE,
+        timeframe: "1m",
+        metadata: {
+          pattern: "orb_breakout",
+          or_high: inst.or_high,
+          or_low: inst.or_low,
+          or_range: orRange,
+          breakout_buffer: BREAKOUT_BUFFER,
+          latest_close: latestClose,
+          direction: "long",
+        },
       });
 
       if (!error) {
-        tradesPlaced++;
-        await sendTelegramNotification({
-          type: "entry",
-          symbol: `${inst.symbol} (${inst.name})`,
-          side: "long",
-          entryPrice,
-          targetPrice,
-          stopLossPrice: stopPrice,
-          riskAmount: RISK_PER_TRADE,
-          shares,
-          timestamp: now.toISOString(),
-        });
+        signalsPlaced++;
       }
     }
 
     // ---- SHORT breakout ----
     else if (latestClose < shortTrigger) {
-      const entryPrice   = latestClose * 0.9995; // 0.05% entry slippage
-      const stopPrice    = inst.or_high;
-      const riskPerShare = stopPrice - entryPrice;
-      if (riskPerShare <= 0) continue;
-      const shares       = Math.floor(RISK_PER_TRADE / riskPerShare);
-      if (shares <= 0) continue;
-      const targetPrice  = entryPrice - orRange * TARGET_MULTIPLIER;
+      const entryPrice = Number((latestClose * 0.9995).toFixed(4));
+      const stopPrice = inst.or_high;
+      const targetPrice = Number((entryPrice - orRange * 1.5).toFixed(4));
 
-      const { error } = await supabase.from("bot_paper_trades").insert({
+      const { error } = await supabase.from("bot_trade_signals").insert({
         strategy_id: strategyUuid,
+        source: "orb_breakout",
         instrument_id: inst.id,
         side: "short",
-        entry_price: entryPrice,
-        entry_time: now.toISOString(),
-        entry_slippage_pct: 0.05,
+        signal_time: nowIso,
+        trigger_price: latestClose,
         stop_loss_price: stopPrice,
         target_price: targetPrice,
-        shares,
-        status: "open",
-        risk_amount: RISK_PER_TRADE,
+        timeframe: "1m",
+        metadata: {
+          pattern: "orb_breakout",
+          or_high: inst.or_high,
+          or_low: inst.or_low,
+          or_range: orRange,
+          breakout_buffer: BREAKOUT_BUFFER,
+          latest_close: latestClose,
+          direction: "short",
+        },
       });
 
       if (!error) {
-        tradesPlaced++;
-        await sendTelegramNotification({
-          type: "entry",
-          symbol: `${inst.symbol} (${inst.name})`,
-          side: "short",
-          entryPrice,
-          targetPrice,
-          stopLossPrice: stopPrice,
-          riskAmount: RISK_PER_TRADE,
-          shares,
-          timestamp: now.toISOString(),
-        });
+        signalsPlaced++;
       }
     }
   }
 
-  return Response.json({ status: "Breakout detection", trades_placed: tradesPlaced });
+  return Response.json({ status: "Breakout detection", trades_placed: signalsPlaced, signals_placed: signalsPlaced });
 });
