@@ -129,6 +129,40 @@ Deno.test("buildExecutorDecision accepts reduced lifecycle as paper trade", () =
   assertEquals(decision.entryPrice, 100.05);
 });
 
+Deno.test("buildExecutorDecision accepts long trigger just below raw band when entry is in band", () => {
+  const boundarySignal = {
+    ...baseSignal,
+    trigger_price: 94.96,
+    stop_loss_price: 90,
+    target_price: 110,
+  };
+  const decision = buildExecutorDecision(boundarySignal, liveStrategy, {
+    ...context,
+    latestPrice: 100,
+  });
+  assertEquals(decision.action, "paper_trade");
+  if (decision.action !== "paper_trade") throw new Error("expected paper trade");
+  assertEquals(decision.entryPrice, 95.0075);
+});
+
+Deno.test("buildExecutorDecision accepts short trigger just above raw band when entry is in band", () => {
+  const shortStrategy = { ...liveStrategy };
+  const shortSignal = {
+    ...baseSignal,
+    side: "short" as const,
+    trigger_price: 105.04,
+    stop_loss_price: 110,
+    target_price: 90,
+  };
+  const decision = buildExecutorDecision(shortSignal, shortStrategy, {
+    ...context,
+    latestPrice: 100,
+  });
+  assertEquals(decision.action, "paper_trade");
+  if (decision.action !== "paper_trade") throw new Error("expected paper trade");
+  assertEquals(decision.entryPrice, 104.9875);
+});
+
 Deno.test("buildExecutorDecision rejects live paper entry when latest price is missing", () => {
   const decision = buildExecutorDecision(baseSignal, liveStrategy, {
     ...context,

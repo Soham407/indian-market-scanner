@@ -143,7 +143,40 @@ function isPaperLiveStatus(status: LifecycleStatus): boolean {
   );
 }
 
-function isWithinSanityBand(
+function getDirectionalTriggerBand(
+  side: SignalSide,
+  latestPrice: number | null,
+): { lower: number; upper: number } | null {
+  if (latestPrice === null) return null;
+  if (!isFiniteNumber(latestPrice) || latestPrice <= 0) return null;
+
+  const lowerBand = latestPrice * (1 - PRICE_SANITY_PCT);
+  const upperBand = latestPrice * (1 + PRICE_SANITY_PCT);
+
+  if (side === "long") {
+    return {
+      lower: lowerBand / (1 + ENTRY_SLIPPAGE_RATE),
+      upper: upperBand,
+    };
+  }
+
+  return {
+    lower: lowerBand,
+    upper: upperBand / (1 - ENTRY_SLIPPAGE_RATE),
+  };
+}
+
+function isWithinTriggerBand(
+  side: SignalSide,
+  triggerPrice: number,
+  latestPrice: number | null,
+): boolean {
+  const band = getDirectionalTriggerBand(side, latestPrice);
+  if (band === null) return false;
+  return triggerPrice >= band.lower && triggerPrice <= band.upper;
+}
+
+function isWithinEntryBand(
   entryPrice: number,
   latestPrice: number | null,
 ): boolean {
@@ -194,11 +227,11 @@ export function buildExecutorDecision(
     return { action: "reject", reason: "missing latest price for sanity check" };
   }
 
-  if (!isWithinSanityBand(typedSignal.trigger_price, context.latestPrice)) {
+  if (!isWithinTriggerBand(typedSignal.side, typedSignal.trigger_price, context.latestPrice)) {
     return { action: "reject", reason: "trigger price outside sanity bounds" };
   }
 
-  if (!isWithinSanityBand(entryPrice, context.latestPrice)) {
+  if (!isWithinEntryBand(entryPrice, context.latestPrice)) {
     return { action: "reject", reason: "entry price outside sanity bounds" };
   }
 
