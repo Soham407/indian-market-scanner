@@ -221,9 +221,16 @@ Deno.serve(async () => {
         continue;
       }
 
+      const meta = signal.metadata as Record<string, unknown> | null;
+      const telegramSymbol = typeof meta?.symbol === "string" && meta.symbol.length > 0
+        ? meta.symbol
+        : typeof meta?.alert_title === "string" && meta.alert_title.length > 0
+        ? meta.alert_title.split(" ")[0]
+        : signal.source;
+
       const telegramResult = await sendTelegramNotification({
         type: "entry",
-        symbol: signal.source,
+        symbol: telegramSymbol,
         side: signal.side,
         entryPrice: decision.entryPrice,
         targetPrice: decision.targetPrice,
