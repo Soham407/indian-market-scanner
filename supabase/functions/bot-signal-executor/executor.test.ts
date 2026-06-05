@@ -109,6 +109,17 @@ Deno.test("buildExecutorDecision accepts live paper strategy and caps risk", () 
   assertEquals(decision.shares, 297);
 });
 
+Deno.test("buildExecutorDecision accepts reduced lifecycle as paper trade", () => {
+  const decision = buildExecutorDecision(
+    baseSignal,
+    { ...liveStrategy, lifecycle_status: "reduced" },
+    context,
+  );
+  assertEquals(decision.action, "paper_trade");
+  if (decision.action !== "paper_trade") throw new Error("expected paper trade");
+  assertEquals(decision.entryPrice, 100.05);
+});
+
 Deno.test("buildExecutorDecision rejects duplicate same-instrument day trade", () => {
   const decision = buildExecutorDecision(baseSignal, liveStrategy, {
     ...context,
@@ -117,6 +128,26 @@ Deno.test("buildExecutorDecision rejects duplicate same-instrument day trade", (
   assertEquals(decision.action, "reject");
   if (decision.action !== "reject") throw new Error("expected reject");
   assertEquals(decision.reason, "duplicate instrument for strategy today");
+});
+
+Deno.test("buildExecutorDecision rejects when max concurrent positions is reached", () => {
+  const decision = buildExecutorDecision(baseSignal, liveStrategy, {
+    ...context,
+    openPositionCount: 2,
+  });
+  assertEquals(decision.action, "reject");
+  if (decision.action !== "reject") throw new Error("expected reject");
+  assertEquals(decision.reason, "max concurrent positions reached");
+});
+
+Deno.test("buildExecutorDecision rejects when max daily trades is reached", () => {
+  const decision = buildExecutorDecision(baseSignal, liveStrategy, {
+    ...context,
+    tradesTodayCount: 6,
+  });
+  assertEquals(decision.action, "reject");
+  if (decision.action !== "reject") throw new Error("expected reject");
+  assertEquals(decision.reason, "max daily trades reached");
 });
 
 Deno.test("buildExecutorDecision rejects malformed signal rows", () => {
