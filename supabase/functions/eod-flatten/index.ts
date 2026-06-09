@@ -181,10 +181,9 @@ Deno.serve(async () => {
   // -------------------------------------------------------------------------
   if (totalNet <= DAILY_LOSS_CIRCUIT_BREAKER) {
     await supabase
-      .from("bot_settings")
+      .from("bot_config")
       .update({
-        trading_enabled: false,
-        kill_switch_reason: `Daily loss ₹${totalNet.toFixed(0)} exceeded ₹3,000 limit`,
+        circuit_breaker_triggered_at: now.toISOString(),
       })
       .eq("id", 1);
 
