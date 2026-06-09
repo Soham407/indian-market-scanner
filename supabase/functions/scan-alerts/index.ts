@@ -56,6 +56,12 @@ const OR_BREAKOUT_WHITELIST = new Set([
   "WIPRO",
 ]);
 
+// Cache Angel One auth token to avoid re-auth every minute (tokens valid ~30m)
+let cachedAngelAuth: AngelAuth | null = null;
+let cachedAngelAuthExpiry: number = 0;
+const ANGEL_AUTH_CACHE_TTL_MS = 25 * 60 * 1000; // 25 minutes
+const ANGEL_API_TIMEOUT_MS = 10_000; // 10 seconds
+
 // ---------------------------------------------------------------------------
 // Time helpers (IST = UTC+5:30)
 // ---------------------------------------------------------------------------
@@ -135,25 +141,59 @@ function angelHeaders(apiKey: string, jwtToken?: string): Record<string, string>
   return h;
 }
 
+async function fetchWithTimeout<T>(
+  url: string,
+  opts: RequestInit = {},
+  timeoutMs: number = ANGEL_API_TIMEOUT_MS,
+): Promise<T> {
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    const resp = await fetch(url, { ...opts, signal: controller.signal });
+    return await resp.json();
+  } finally {
+    clearTimeout(timeoutId);
+  }
+}
+
 async function authenticateAngelOne(): Promise<AngelAuth> {
+  // Check cache first
+  if (cachedAngelAuth && Date.now() < cachedAngelAuthExpiry) {
+    return cachedAngelAuth;
+  }
+
   const apiKey = Deno.env.get("AngelOne_Apikey");
   const secretKey = Deno.env.get("AngelOne_SecretKey");
   const clientId = Deno.env.get("AngelOne_ClientID");
   const pin = Deno.env.get("AngelOne_PIN");
   if (!apiKey || !secretKey || !clientId || !pin) {
-    throw new Error("Missing Angel One secrets");
+    throw new Error("[scan-alerts] Missing Angel One secrets (AngelOne_Apikey, AngelOne_SecretKey, AngelOne_ClientID, AngelOne_PIN)");
   }
-  const totp = await generateTotp(secretKey);
-  const resp = await fetch("https://apiconnect.angelone.in/rest/auth/angelbroking/user/v1/loginByPassword", {
-    method: "POST",
-    headers: angelHeaders(apiKey),
-    body: JSON.stringify({ clientcode: clientId, password: pin, totp }),
-  });
-  const data = await resp.json();
-  if (!data?.status || !data?.data?.jwtToken) {
-    throw new Error(`Angel One login failed: ${data?.message ?? JSON.stringify(data)}`);
+
+  try {
+    const totp = await generateTotp(secretKey);
+    const data = await fetchWithTimeout<Record<string, unknown>>(
+      "https://apiconnect.angelone.in/rest/auth/angelbroking/user/v1/loginByPassword",
+      {
+        method: "POST",
+        headers: angelHeaders(apiKey),
+        body: JSON.stringify({ clientcode: clientId, password: pin, totp }),
+      },
+      ANGEL_API_TIMEOUT_MS,
+    );
+
+    if (!data?.status || !data?.data?.jwtToken) {
+      throw new Error(`Angel One login failed: ${data?.message ?? JSON.stringify(data)}`);
+    }
+
+    const auth = { apiKey, jwtToken: data.data.jwtToken as string };
+    cachedAngelAuth = auth;
+    cachedAngelAuthExpiry = Date.now() + ANGEL_AUTH_CACHE_TTL_MS;
+    return auth;
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    throw new Error(`[scan-alerts] Angel One auth failed: ${msg}`);
   }
-  return { apiKey, jwtToken: data.data.jwtToken as string };
 }
 
 async function fetchDailyCandles(
@@ -161,20 +201,29 @@ async function fetchDailyCandles(
   jwtToken: string,
   token: string,
 ): Promise<DailyCandle[]> {
-  const todate = tradingDateForScan() + " 15:30";
-  const resp = await fetch("https://apiconnect.angelone.in/rest/secure/angelbroking/historical/v1/getCandleData", {
-    method: "POST",
-    headers: angelHeaders(apiKey, jwtToken),
-    body: JSON.stringify({
-      exchange: "NSE",
-      symboltoken: token,
-      interval: "ONE_DAY",
-      fromdate: historicalFromDate(),
-      todate,
-    }),
-  });
-  const data = await resp.json();
-  return (data?.data ?? []) as DailyCandle[];
+  try {
+    const todate = tradingDateForScan() + " 15:30";
+    const data = await fetchWithTimeout<Record<string, unknown>>(
+      "https://apiconnect.angelone.in/rest/secure/angelbroking/historical/v1/getCandleData",
+      {
+        method: "POST",
+        headers: angelHeaders(apiKey, jwtToken),
+        body: JSON.stringify({
+          exchange: "NSE",
+          symboltoken: token,
+          interval: "ONE_DAY",
+          fromdate: historicalFromDate(),
+          todate,
+        }),
+      },
+      ANGEL_API_TIMEOUT_MS,
+    );
+    return (data?.data ?? []) as DailyCandle[];
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    console.error(`[scan-alerts] fetchDailyCandles failed for token ${token}: ${msg}`);
+    return [];
+  }
 }
 
 function dailyAtr(highs: number[], lows: number[], closes: number[], period = 14): number {
@@ -422,19 +471,24 @@ Deno.serve(async () => {
     const inst = rawInst as unknown as Instrument;
     return OR_BREAKOUT_WHITELIST.has(inst.symbol) && !!inst.angel_one_token;
   });
-  const angelAuthPromise: Promise<AngelAuth | null> = hasOrBreakoutCandidate
-    ? authenticateAngelOne().catch((err) => {
-        console.error("[scan-alerts] Angel One auth failed for OR breakout gate:", err);
-        return null;
-      })
-    : Promise.resolve(null);
+
+  let angelAuth: AngelAuth | null = null;
+  let angelAuthError: string | null = null;
+  if (hasOrBreakoutCandidate) {
+    try {
+      angelAuth = await authenticateAngelOne();
+    } catch (err) {
+      angelAuthError = err instanceof Error ? err.message : String(err);
+      console.error(angelAuthError);
+    }
+  }
+
   const alerts = (await Promise.all((instruments ?? []).map(async (rawInst) => {
     const inst = rawInst as unknown as Instrument;
     const bearish = buildBearishAlert(inst, today);
     const bullish = buildBullishAlert(inst, today);
     const orBearish = buildOrTrapBearish(inst, today);
     const orBullish = buildOrTrapBullish(inst, today);
-    const angelAuth = await angelAuthPromise;
     const orBreakBullish = angelAuth ? await buildOrBreakoutBullish(inst, today, angelAuth) : null;
     const orBreakBearish = angelAuth ? await buildOrBreakoutBearish(inst, today, angelAuth) : null;
     return [bearish, bullish, orBearish, orBullish, orBreakBullish, orBreakBearish].filter(Boolean);
@@ -469,6 +523,8 @@ Deno.serve(async () => {
     bot_signals_queued: botQueue.queued,
     bot_signals_skipped: botQueue.skipped,
     bot_signal_error: botQueue.error ?? null,
+    angel_auth_status: angelAuth ? "authenticated" : `failed: ${angelAuthError}`,
+    or_breakout_signals: alerts.filter(a => (a.dedupe_key as string).includes("or_breakout")).length,
   });
 });
 
