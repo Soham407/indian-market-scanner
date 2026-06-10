@@ -1,5 +1,6 @@
 import { createServiceClient } from "../_shared/supabase.ts";
 import { getMarketSessionStatus } from "../_shared/market-hours.ts";
+import { sendTelegramNotification } from "../_shared/telegram.ts";
 
 const EXCHANGE = "NSE";
 const OR_WINDOW_START   = 9 * 60 + 15;  // 9:15 IST
@@ -92,7 +93,7 @@ Deno.serve(async () => {
 
   const { data: botSettings, error: settingsError } = await supabase
     .from("bot_settings")
-    .select("trading_enabled,max_daily_trades")
+    .select("trading_enabled,max_daily_trades,circuit_breaker_tripped_at")
     .eq("id", 1)
     .maybeSingle();
 
@@ -100,7 +101,38 @@ Deno.serve(async () => {
     return Response.json({ error: settingsError.message, trades_placed: 0 }, { status: 500 });
   }
 
-  const tradingEnabled = botSettings?.trading_enabled ?? false;
+  let tradingEnabled = botSettings?.trading_enabled ?? false;
+
+  // The daily-loss circuit breaker only pauses the day it tripped. A manual
+  // kill switch leaves circuit_breaker_tripped_at null and never auto-resets.
+  if (!tradingEnabled && botSettings?.circuit_breaker_tripped_at) {
+    const trippedIstDate = istDateStr(new Date(botSettings.circuit_breaker_tripped_at));
+    if (trippedIstDate < todayIst) {
+      const { error: resetError } = await supabase
+        .from("bot_settings")
+        .update({
+          trading_enabled: true,
+          kill_switch_reason: null,
+          circuit_breaker_tripped_at: null,
+        })
+        .eq("id", 1);
+
+      if (!resetError) {
+        await supabase
+          .from("bot_config")
+          .update({ trading_enabled: true, circuit_breaker_triggered_at: null })
+          .eq("id", 1);
+
+        tradingEnabled = true;
+        await sendTelegramNotification({
+          type: "heartbeat",
+          symbol: "BOT",
+          timestamp: nowIso,
+          message: `Circuit breaker auto-reset for new trading day (tripped ${trippedIstDate})`,
+        });
+      }
+    }
+  }
 
   // -------------------------------------------------------------------------
   // Phase 1: Build opening range from 9:15–9:30 candles

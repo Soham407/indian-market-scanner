@@ -1,26 +1,33 @@
 'use client';
 
 import { useEffect, useState } from 'react';
-import { createClient } from '@supabase/supabase-js';
+import { createBrowserClient } from '@/lib/supabase/client';
 
+// Reads and writes go to bot_settings — the table the bot's edge functions
+// actually gate on. Writes use the bot_set_trading RPC because RLS only
+// grants SELECT to authenticated users.
 export function BotControls() {
   const [tradingEnabled, setTradingEnabled] = useState(true);
+  const [killSwitchReason, setKillSwitchReason] = useState<string | null>(null);
   const [circuitBreakerTriggered, setCircuitBreakerTriggered] = useState(false);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
-  const supabase = createClient(
-    process.env.NEXT_PUBLIC_SUPABASE_URL || '',
-    process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || ''
-  );
+  const supabase = createBrowserClient();
 
   // Load initial state
   useEffect(() => {
-    const loadBotConfig = async () => {
+    if (!supabase) {
+      setError('Supabase is not configured');
+      setLoading(false);
+      return;
+    }
+
+    const loadBotSettings = async () => {
       try {
         const { data, error: queryError } = await supabase
-          .from('bot_config')
-          .select('trading_enabled, circuit_breaker_triggered_at')
+          .from('bot_settings')
+          .select('trading_enabled, kill_switch_reason, circuit_breaker_tripped_at')
           .eq('id', 1)
           .single();
 
@@ -28,32 +35,38 @@ export function BotControls() {
 
         if (data) {
           setTradingEnabled(data.trading_enabled);
-          setCircuitBreakerTriggered(!!data.circuit_breaker_triggered_at);
+          setKillSwitchReason(data.kill_switch_reason);
+          setCircuitBreakerTriggered(!!data.circuit_breaker_tripped_at);
         }
       } catch (err) {
-        setError(err instanceof Error ? err.message : 'Failed to load bot config');
+        setError(err instanceof Error ? err.message : 'Failed to load bot settings');
       } finally {
         setLoading(false);
       }
     };
 
-    loadBotConfig();
+    loadBotSettings();
 
     // Subscribe to real-time updates
     const channel = supabase
-      .channel('bot_config_changes')
+      .channel('bot_settings_changes')
       .on(
         'postgres_changes',
         {
           event: '*',
           schema: 'public',
-          table: 'bot_config',
+          table: 'bot_settings',
           filter: 'id=eq.1',
         },
         (payload) => {
-          const newData = payload.new as any;
+          const newData = payload.new as {
+            trading_enabled: boolean;
+            kill_switch_reason: string | null;
+            circuit_breaker_tripped_at: string | null;
+          };
           setTradingEnabled(newData.trading_enabled);
-          setCircuitBreakerTriggered(!!newData.circuit_breaker_triggered_at);
+          setKillSwitchReason(newData.kill_switch_reason);
+          setCircuitBreakerTriggered(!!newData.circuit_breaker_tripped_at);
         }
       )
       .subscribe();
@@ -63,22 +76,23 @@ export function BotControls() {
     };
   }, [supabase]);
 
-  const toggleTrading = async () => {
+  const setTrading = async (enabled: boolean) => {
+    if (!supabase) return;
     try {
       setLoading(true);
-      const newState = !tradingEnabled;
 
-      const { error: updateError } = await supabase
-        .from('bot_config')
-        .update({
-          trading_enabled: newState,
-          updated_at: new Date().toISOString(),
-        })
-        .eq('id', 1);
+      const { error: rpcError } = await supabase.rpc('bot_set_trading', {
+        p_enabled: enabled,
+      });
 
-      if (updateError) throw updateError;
+      if (rpcError) throw rpcError;
 
-      setTradingEnabled(newState);
+      setTradingEnabled(enabled);
+      if (enabled) {
+        setKillSwitchReason(null);
+        setCircuitBreakerTriggered(false);
+      }
+      setError(null);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to update trading status');
     } finally {
@@ -86,27 +100,8 @@ export function BotControls() {
     }
   };
 
-  const resetCircuitBreaker = async () => {
-    try {
-      setLoading(true);
-
-      const { error: updateError } = await supabase
-        .from('bot_config')
-        .update({
-          circuit_breaker_triggered_at: null,
-          updated_at: new Date().toISOString(),
-        })
-        .eq('id', 1);
-
-      if (updateError) throw updateError;
-
-      setCircuitBreakerTriggered(false);
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to reset circuit breaker');
-    } finally {
-      setLoading(false);
-    }
-  };
+  const toggleTrading = () => setTrading(!tradingEnabled);
+  const resetCircuitBreaker = () => setTrading(true);
 
   return (
     <div className="rounded-lg border border-gray-200 bg-white p-6 shadow-sm dark:border-gray-800 dark:bg-gray-900">
@@ -116,6 +111,9 @@ export function BotControls() {
           <p className="text-sm text-gray-600 dark:text-gray-400">
             {tradingEnabled ? '✅ Trading ENABLED' : '🛑 Trading DISABLED'}
           </p>
+          {!tradingEnabled && killSwitchReason && (
+            <p className="text-xs text-gray-500 dark:text-gray-500">{killSwitchReason}</p>
+          )}
         </div>
         <button
           onClick={toggleTrading}
@@ -140,7 +138,7 @@ export function BotControls() {
             ⛔ Circuit Breaker Triggered
           </p>
           <p className="text-xs text-red-800 dark:text-red-200">
-            Daily loss limit exceeded. Trading paused until reset.
+            Daily loss limit exceeded. Trading paused — auto-resumes next trading day.
           </p>
           <button
             onClick={resetCircuitBreaker}

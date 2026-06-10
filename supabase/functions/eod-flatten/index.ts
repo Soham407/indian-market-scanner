@@ -180,6 +180,19 @@ Deno.serve(async () => {
   // 5. Circuit breaker check
   // -------------------------------------------------------------------------
   if (totalNet <= DAILY_LOSS_CIRCUIT_BREAKER) {
+    // bot_settings is the gate orb-scanner and bot-signal-executor read;
+    // bot_config only feeds the dashboard's breaker banner. Write both.
+    // circuit_breaker_tripped_at marks this as a breaker pause so
+    // orb-scanner auto-resumes trading the next IST day.
+    await supabase
+      .from("bot_settings")
+      .update({
+        trading_enabled: false,
+        kill_switch_reason: `Daily loss ₹${totalNet.toFixed(0)} exceeded ₹3,000 limit`,
+        circuit_breaker_tripped_at: now.toISOString(),
+      })
+      .eq("id", 1);
+
     await supabase
       .from("bot_config")
       .update({
