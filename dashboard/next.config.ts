@@ -45,7 +45,6 @@ const securityHeaders = [
 ];
 
 const nextConfig: NextConfig = {
-  turbopack: false,
   async headers() {
     return [
       {
