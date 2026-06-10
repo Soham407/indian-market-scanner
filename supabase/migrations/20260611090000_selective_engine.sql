@@ -33,6 +33,15 @@ set max_daily_trades = 5,
     max_concurrent_positions = 3
 where id = 1;
 
+-- Fewer, bigger: at 0.25× (₹250 risk) the ₹40+ round-trip charges are ~11% of
+-- a 1.5R expected win and the economics gate would reject every trade. 1.0×
+-- (₹1,000 = 1% of ₹1L paper capital) brings charges under 3% of expected win.
+-- The daily ₹3,000 breaker still caps the day at 3 full-risk losers.
+update public.bot_strategies
+set risk_multiplier = 1.0
+where lifecycle_status in ('paper_live_small', 'paper_live_normal', 'reduced')
+  and risk_multiplier < 1.0;
+
 -- Real-money promotion gates: the documented bar before any live capital.
 -- No code path wires real money; these are config-as-policy.
 update public.bot_strategies

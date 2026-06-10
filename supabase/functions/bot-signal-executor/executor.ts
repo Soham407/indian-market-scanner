@@ -1,3 +1,5 @@
+import { economicsGate } from "../_shared/trade-math.ts";
+
 export type SignalSide = "long" | "short";
 
 export type LifecycleStatus =
@@ -40,11 +42,14 @@ export type ExecutorContext = {
   hasDuplicateForInstrumentToday: boolean;
   latestPrice: number | null;
   nowIso: string;
+  // Strategy's live win rate from closed bot_signal_outcomes (null when fewer
+  // than 20 samples — the economics gate then assumes a conservative 0.40).
+  strategyWinRate?: number | null;
 };
 
 export type ExecutorDecision =
   | { action: "reject"; reason: string }
-  | { action: "shadow"; entryPrice: number; riskAmount: number }
+  | { action: "shadow"; entryPrice: number; riskAmount: number; reason?: string }
   | {
       action: "paper_trade";
       entryPrice: number;
@@ -58,6 +63,7 @@ export type ExecutorDecision =
 const ENTRY_SLIPPAGE_RATE = 0.0005;
 const MAX_RISK_MULTIPLIER = 1.5;
 const PRICE_SANITY_PCT = 0.05;
+const FALLBACK_WIN_RATE = 0.40;
 
 function isFiniteNumber(value: unknown): value is number {
   return typeof value === "number" && Number.isFinite(value);
@@ -259,6 +265,23 @@ export function buildExecutorDecision(
 
   if (shares <= 0) {
     return { action: "reject", reason: "position size is zero" };
+  }
+
+  // Cost-aware economics gate: trades whose expected value is negative at the
+  // strategy's live win rate, or whose fixed charges eat >10% of the expected
+  // win, are shadow-tracked instead of traded — they still produce outcome
+  // data for the promotion engine.
+  const economics = economicsGate({
+    side: typedSignal.side,
+    entryPrice,
+    stopLossPrice: typedSignal.stop_loss_price,
+    targetPrice: typedSignal.target_price,
+    shares,
+    winRate: context.strategyWinRate ?? FALLBACK_WIN_RATE,
+  });
+
+  if (!economics.accept) {
+    return { action: "shadow", entryPrice, riskAmount, reason: economics.reason };
   }
 
   return {

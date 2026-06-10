@@ -78,6 +78,37 @@ Deno.test("calculateShares sizes from effective risk and per-share risk", () => 
   assertEquals(calculateShares(1000, 0.25, 100.05, 95), 49);
 });
 
+Deno.test("buildExecutorDecision routes sub-economic trades to shadow with reason", () => {
+  // Tiny target distance: charges dwarf the expected win.
+  const decision = buildExecutorDecision(
+    { ...baseSignal, target_price: 100.5 },
+    liveStrategy,
+    { ...context, strategyWinRate: 0.45 },
+  );
+  assertEquals(decision.action, "shadow");
+  if (decision.action !== "shadow") throw new Error("expected shadow");
+  assertEquals(decision.reason?.startsWith("economics:"), true);
+});
+
+Deno.test("buildExecutorDecision routes negative-EV trades to shadow at low win rate", () => {
+  const decision = buildExecutorDecision(baseSignal, liveStrategy, {
+    ...context,
+    strategyWinRate: 0.25,
+  });
+  assertEquals(decision.action, "shadow");
+  if (decision.action !== "shadow") throw new Error("expected shadow");
+  assertEquals(decision.reason?.startsWith("economics:"), true);
+});
+
+Deno.test("buildExecutorDecision uses 0.40 fallback win rate when none supplied", () => {
+  // baseSignal economics barely pass at 0.40 (EV ≈ +3.8) — accepts.
+  const decision = buildExecutorDecision(baseSignal, liveStrategy, {
+    ...context,
+    strategyWinRate: null,
+  });
+  assertEquals(decision.action, "paper_trade");
+});
+
 Deno.test("buildExecutorDecision creates shadow outcome without paper trade", () => {
   const decision = buildExecutorDecision(
     baseSignal,

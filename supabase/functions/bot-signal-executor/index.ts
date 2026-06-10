@@ -100,6 +100,32 @@ Deno.serve(async () => {
       (processedSignals ?? []).map((signal) => `${signal.strategy_id}:${signal.instrument_id}:${dayStartIso.slice(0, 10)}`),
     );
 
+    // Live win rate per strategy from the most recent 50 closed outcomes
+    // (shadow + paper both count — shadow data solves the cold start).
+    // Null below 20 samples; the economics gate then assumes 0.40.
+    const winRateByStrategy = new Map<string, number | null>();
+    const getStrategyWinRate = async (strategyId: string): Promise<number | null> => {
+      if (winRateByStrategy.has(strategyId)) {
+        return winRateByStrategy.get(strategyId) ?? null;
+      }
+      const { data: outcomes } = await supabase
+        .from("bot_signal_outcomes")
+        .select("net_pnl")
+        .eq("strategy_id", strategyId)
+        .eq("status", "closed")
+        .not("net_pnl", "is", null)
+        .order("closed_at", { ascending: false })
+        .limit(50);
+
+      let winRate: number | null = null;
+      if (outcomes && outcomes.length >= 20) {
+        const wins = outcomes.filter((o) => Number(o.net_pnl) > 0).length;
+        winRate = wins / outcomes.length;
+      }
+      winRateByStrategy.set(strategyId, winRate);
+      return winRate;
+    };
+
     const rejectSignal = async (signalId: string, reason: string) => {
       const { error } = await supabase
         .from("bot_trade_signals")
@@ -160,6 +186,7 @@ Deno.serve(async () => {
           ? null
           : Number(latestCandle.close),
         nowIso,
+        strategyWinRate: await getStrategyWinRate(signal.strategy_id),
       };
 
       const decision = buildExecutorDecision(signal, strategy as StrategyRow, context);
@@ -183,6 +210,12 @@ Deno.serve(async () => {
             shadowError.message,
           );
           continue;
+        }
+        if (decision.reason) {
+          await supabase
+            .from("bot_trade_signals")
+            .update({ metadata: { ...(signal.metadata ?? {}), shadow_reason: decision.reason } })
+            .eq("id", signal.id);
         }
         seenSignalKeys.add(signalKey);
         shadowTracked++;
