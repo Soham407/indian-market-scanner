@@ -1,6 +1,13 @@
 import { createServiceClient } from "../_shared/supabase.ts";
 import { getMarketSessionStatus } from "../_shared/market-hours.ts";
 import { sendTelegramNotification } from "../_shared/telegram.ts";
+import { niftyRegimeAllows, scoreSignal } from "../_shared/trade-math.ts";
+import {
+  fetchAtrStops,
+  getNiftyRegime,
+} from "../_shared/signal-helpers.ts";
+
+const QUALITY_SCORE_THRESHOLD = 60;
 
 const EXCHANGE = "NSE";
 const OR_WINDOW_START   = 9 * 60 + 15;  // 9:15 IST
@@ -51,6 +58,7 @@ type BotInstrument = {
   or_low: number | null;
   or_date: string | null;
   session_volume: number | null;
+  vwap: number | null;
 };
 
 type StrategyRow = {
@@ -202,7 +210,7 @@ Deno.serve(async () => {
 
   const { data: instruments } = await supabase
     .from("instruments")
-    .select("id,symbol,name,or_high,or_low,or_date,session_volume")
+    .select("id,symbol,name,or_high,or_low,or_date,session_volume,vwap")
     .eq("exchange", EXCHANGE)
     .in("symbol", [...NIFTY_50_SYMBOLS]);
 
@@ -211,7 +219,10 @@ Deno.serve(async () => {
   // Minutes elapsed since market open (for per-minute volume estimate)
   const marketMinutesElapsed = Math.max(1, istMinutes(now) - OR_WINDOW_START);
 
+  const regime = await getNiftyRegime(supabase, todayIst);
+
   let signalsPlaced = 0;
+  let signalsShadowed = 0;
 
   for (const inst of instruments as BotInstrument[]) {
     if (signalsPlaced >= remaining) break;
@@ -253,74 +264,80 @@ Deno.serve(async () => {
     const longTrigger  = inst.or_high * (1 + BREAKOUT_BUFFER);
     const shortTrigger = inst.or_low  * (1 - BREAKOUT_BUFFER);
 
-    // ---- LONG breakout ----
-    if (latestClose > longTrigger) {
-      const entryPrice = Number((latestClose * 1.0005).toFixed(4));
-      const stopPrice = inst.or_low;
-      const targetPrice = Number((entryPrice + orRange * 1.5).toFixed(4));
+    // ---- Breakout in either direction ----
+    const side: "long" | "short" | null = latestClose > longTrigger
+      ? "long"
+      : latestClose < shortTrigger
+      ? "short"
+      : null;
+    if (!side) continue;
 
-      const { error } = await supabase.from("bot_trade_signals").insert({
-        strategy_id: strategyUuid,
-        source: "orb_breakout",
-        instrument_id: inst.id,
-        side: "long",
-        signal_time: nowIso,
-        trigger_price: latestClose,
-        stop_loss_price: stopPrice,
-        target_price: targetPrice,
-        timeframe: "1m",
-        metadata: {
-          symbol: inst.symbol,
-          name: inst.name,
-          pattern: "orb_breakout",
-          or_high: inst.or_high,
-          or_low: inst.or_low,
-          or_range: orRange,
-          breakout_buffer: BREAKOUT_BUFFER,
-          latest_close: latestClose,
-          direction: "long",
-        },
-      });
+    // ATR-based stop (clamped to [0.4%, 1.5%] of price); keep the measured-move
+    // target only when it is farther than the 1.5R ATR target.
+    const atrStops = await fetchAtrStops(supabase, inst.id, side, latestClose);
+    const measuredTarget = side === "long"
+      ? Number((latestClose + orRange * 1.5).toFixed(4))
+      : Number((latestClose - orRange * 1.5).toFixed(4));
+    const targetPrice = side === "long"
+      ? Math.max(atrStops.targetPrice, measuredTarget)
+      : Math.min(atrStops.targetPrice, measuredTarget);
 
-      if (!error) {
-        signalsPlaced++;
-      }
-    }
+    const niftyOrMid = regime.orHigh !== null && regime.orLow !== null
+      ? (regime.orHigh + regime.orLow) / 2
+      : null;
+    const { score, components } = scoreSignal({
+      volumeMultiplier: avgMinVol / MIN_AVG_MIN_VOLUME,
+      orRangePct,
+      stockMovePct: inst.vwap && inst.vwap > 0 ? (latestClose - inst.vwap) / inst.vwap : 0,
+      niftyMovePct: regime.spot !== null && niftyOrMid !== null && niftyOrMid > 0
+        ? (regime.spot - niftyOrMid) / niftyOrMid
+        : null,
+      side,
+      minutesSinceOpenIst: marketMinutesElapsed,
+    });
+    const regimeAllowed = niftyRegimeAllows(side, regime.spot, regime.orHigh, regime.orLow);
+    const isPending = regimeAllowed && score >= QUALITY_SCORE_THRESHOLD;
 
-    // ---- SHORT breakout ----
-    else if (latestClose < shortTrigger) {
-      const entryPrice = Number((latestClose * 0.9995).toFixed(4));
-      const stopPrice = inst.or_high;
-      const targetPrice = Number((entryPrice - orRange * 1.5).toFixed(4));
+    const { error } = await supabase.from("bot_trade_signals").insert({
+      strategy_id: strategyUuid,
+      source: "orb_breakout",
+      instrument_id: inst.id,
+      side,
+      signal_time: nowIso,
+      trigger_price: latestClose,
+      stop_loss_price: atrStops.stopLossPrice,
+      target_price: targetPrice,
+      timeframe: "1m",
+      status: isPending ? "pending" : "shadow_tracked",
+      metadata: {
+        symbol: inst.symbol,
+        name: inst.name,
+        pattern: "orb_breakout",
+        or_high: inst.or_high,
+        or_low: inst.or_low,
+        or_range: orRange,
+        breakout_buffer: BREAKOUT_BUFFER,
+        latest_close: latestClose,
+        direction: side,
+        quality_score: score,
+        score_components: components,
+        ...(regimeAllowed ? {} : { shadow_reason: "nifty_regime" }),
+        ...(regimeAllowed && score < QUALITY_SCORE_THRESHOLD
+          ? { shadow_reason: "quality_score_below_threshold" }
+          : {}),
+      },
+    });
 
-      const { error } = await supabase.from("bot_trade_signals").insert({
-        strategy_id: strategyUuid,
-        source: "orb_breakout",
-        instrument_id: inst.id,
-        side: "short",
-        signal_time: nowIso,
-        trigger_price: latestClose,
-        stop_loss_price: stopPrice,
-        target_price: targetPrice,
-        timeframe: "1m",
-        metadata: {
-          symbol: inst.symbol,
-          name: inst.name,
-          pattern: "orb_breakout",
-          or_high: inst.or_high,
-          or_low: inst.or_low,
-          or_range: orRange,
-          breakout_buffer: BREAKOUT_BUFFER,
-          latest_close: latestClose,
-          direction: "short",
-        },
-      });
-
-      if (!error) {
-        signalsPlaced++;
-      }
+    if (!error) {
+      if (isPending) signalsPlaced++;
+      else signalsShadowed++;
     }
   }
 
-  return Response.json({ status: "Breakout detection", trades_placed: signalsPlaced, signals_placed: signalsPlaced });
+  return Response.json({
+    status: "Breakout detection",
+    trades_placed: signalsPlaced,
+    signals_placed: signalsPlaced,
+    signals_shadowed: signalsShadowed,
+  });
 });
