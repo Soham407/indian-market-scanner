@@ -4,6 +4,14 @@ import {
   marketClosedResponse,
 } from "../_shared/market-hours.ts";
 import { ema, rsi, sma } from "../_shared/indicators.ts";
+import { niftyRegimeAllows, scoreSignal } from "../_shared/trade-math.ts";
+import {
+  fetchAtrStops,
+  getNiftyRegime,
+  type NiftyRegime,
+} from "../_shared/signal-helpers.ts";
+
+const QUALITY_SCORE_THRESHOLD = 60;
 
 type Instrument = {
   id: string;
@@ -172,7 +180,11 @@ async function authenticateAngelOne(): Promise<AngelAuth> {
 
   try {
     const totp = await generateTotp(secretKey);
-    const data = await fetchWithTimeout<Record<string, unknown>>(
+    const data = await fetchWithTimeout<{
+      status?: boolean;
+      message?: string;
+      data?: { jwtToken?: string };
+    }>(
       "https://apiconnect.angelone.in/rest/auth/angelbroking/user/v1/loginByPassword",
       {
         method: "POST",
@@ -186,7 +198,7 @@ async function authenticateAngelOne(): Promise<AngelAuth> {
       throw new Error(`Angel One login failed: ${data?.message ?? JSON.stringify(data)}`);
     }
 
-    const auth = { apiKey, jwtToken: data.data.jwtToken as string };
+    const auth = { apiKey, jwtToken: data.data.jwtToken };
     cachedAngelAuth = auth;
     cachedAngelAuthExpiry = Date.now() + ANGEL_AUTH_CACHE_TTL_MS;
     return auth;
@@ -377,8 +389,11 @@ function toBotSignal(
 async function enqueueBotSignals(
   supabase: ReturnType<typeof createServiceClient>,
   alerts: AlertCandidate[],
-): Promise<{ queued: number; skipped: number; error?: string }> {
-  if (alerts.length === 0) return { queued: 0, skipped: 0 };
+  instrumentById: Map<string, Instrument>,
+  regime: NiftyRegime,
+  today: string,
+): Promise<{ queued: number; queued_shadow: number; skipped: number; error?: string }> {
+  if (alerts.length === 0) return { queued: 0, queued_shadow: 0, skipped: 0 };
 
   const patterns = [...new Set(alerts.map((alert) => patternFromDedupeKey(alert.dedupe_key)).filter((pattern): pattern is string => !!pattern))];
   const { data: strategies, error: strategyError } = await supabase
@@ -388,7 +403,7 @@ async function enqueueBotSignals(
     .eq("enabled", true)
     .neq("lifecycle_status", "disabled");
 
-  if (strategyError) return { queued: 0, skipped: alerts.length, error: strategyError.message };
+  if (strategyError) return { queued: 0, queued_shadow: 0, skipped: alerts.length, error: strategyError.message };
 
   const strategyByName = new Map((strategies ?? []).map((strategy: StrategyLookup) => [strategy.name, strategy.id]));
   const nowIso = new Date().toISOString();
@@ -398,7 +413,7 @@ async function enqueueBotSignals(
     return strategyId ? [toBotSignal(alert, strategyId, nowIso)] : [];
   });
 
-  if (signals.length === 0) return { queued: 0, skipped: alerts.length };
+  if (signals.length === 0) return { queued: 0, queued_shadow: 0, skipped: alerts.length };
 
   const signalKeys = signals
     .map((signal) => signal.metadata?.alert_dedupe_key)
@@ -410,7 +425,7 @@ async function enqueueBotSignals(
     .in("metadata->>alert_dedupe_key", signalKeys)
     .in("status", ["pending", "shadow_tracked", "accepted"]);
   if (existingSignalsError) {
-    return { queued: 0, skipped: alerts.length, error: existingSignalsError.message };
+    return { queued: 0, queued_shadow: 0, skipped: alerts.length, error: existingSignalsError.message };
   }
 
   const existingSignalKeys = new Set(
@@ -422,20 +437,84 @@ async function enqueueBotSignals(
     !existingSignalKeys.has(signal.metadata.alert_dedupe_key as string)
   );
 
-  if (missingSignals.length === 0) return { queued: 0, skipped: alerts.length };
+  if (missingSignals.length === 0) return { queued: 0, queued_shadow: 0, skipped: alerts.length };
 
   let queued = 0;
+  let queuedShadow = 0;
   for (const signal of missingSignals) {
-    const { error } = await supabase.from("bot_trade_signals").insert(signal);
+    // ── Selective engine: ATR geometry, quality score, NIFTY regime ──────────
+    const inst = instrumentById.get(signal.instrument_id);
+
+    const atrStops = await fetchAtrStops(
+      supabase,
+      signal.instrument_id,
+      signal.side as "long" | "short",
+      signal.trigger_price,
+    );
+    signal.stop_loss_price = atrStops.stopLossPrice;
+    // Keep a strategy-supplied target (e.g. measured move) only when it is
+    // farther than the 1.5R ATR target — never closer.
+    const atrTargetFarther = signal.side === "long"
+      ? atrStops.targetPrice > signal.target_price
+      : atrStops.targetPrice < signal.target_price;
+    if (atrTargetFarther) signal.target_price = atrStops.targetPrice;
+
+    const orRangePct =
+      inst?.or_high && inst?.or_low && inst?.last_price && inst.or_date === today
+        ? (inst.or_high - inst.or_low) / inst.last_price
+        : null;
+    const stockMovePct = inst?.vwap && inst?.last_price
+      ? (inst.last_price - inst.vwap) / inst.vwap
+      : 0;
+    const niftyOrMid = regime.orHigh !== null && regime.orLow !== null
+      ? (regime.orHigh + regime.orLow) / 2
+      : null;
+    const niftyMovePct = regime.spot !== null && niftyOrMid !== null && niftyOrMid > 0
+      ? (regime.spot - niftyOrMid) / niftyOrMid
+      : null;
+
+    const { score, components } = scoreSignal({
+      volumeMultiplier: (signal.metadata.volume_multiplier as number) ?? 1,
+      orRangePct,
+      stockMovePct,
+      niftyMovePct,
+      side: signal.side as "long" | "short",
+      minutesSinceOpenIst: minutesSinceOpen(),
+    });
+
+    const regimeAllowed = niftyRegimeAllows(
+      signal.side as "long" | "short",
+      regime.spot,
+      regime.orHigh,
+      regime.orLow,
+    );
+
+    const isPending = regimeAllowed && score >= QUALITY_SCORE_THRESHOLD;
+    const row = {
+      ...signal,
+      status: isPending ? "pending" : "shadow_tracked",
+      metadata: {
+        ...signal.metadata,
+        quality_score: score,
+        score_components: components,
+        ...(regimeAllowed ? {} : { shadow_reason: "nifty_regime" }),
+        ...(regimeAllowed && score < QUALITY_SCORE_THRESHOLD
+          ? { shadow_reason: "quality_score_below_threshold" }
+          : {}),
+      },
+    };
+
+    const { error } = await supabase.from("bot_trade_signals").insert(row);
     if (error) {
       const isDuplicateRace = "code" in error && error.code === "23505";
       if (isDuplicateRace) continue;
-      return { queued, skipped: alerts.length - queued, error: error.message };
+      return { queued, queued_shadow: queuedShadow, skipped: alerts.length - queued, error: error.message };
     }
-    queued++;
+    if (isPending) queued++;
+    else queuedShadow++;
   }
 
-  return { queued, skipped: alerts.length - queued };
+  return { queued, queued_shadow: queuedShadow, skipped: alerts.length - queued - queuedShadow };
 }
 
 // ---------------------------------------------------------------------------
@@ -515,12 +594,23 @@ Deno.serve(async () => {
     await sendTelegramAlerts(newAlerts);
   }
 
-  const botQueue = await enqueueBotSignals(supabase, alerts as AlertCandidate[]);
+  const instrumentById = new Map<string, Instrument>(
+    ((instruments ?? []) as unknown as Instrument[]).map((inst) => [inst.id, inst]),
+  );
+  const regime = await getNiftyRegime(supabase, today);
+  const botQueue = await enqueueBotSignals(
+    supabase,
+    alerts as AlertCandidate[],
+    instrumentById,
+    regime,
+    today,
+  );
 
   return Response.json({
     upserted: alerts.length,
     new_alerts: newAlerts.length,
     bot_signals_queued: botQueue.queued,
+    bot_signals_shadow: botQueue.queued_shadow,
     bot_signals_skipped: botQueue.skipped,
     bot_signal_error: botQueue.error ?? null,
     angel_auth_status: angelAuth ? "authenticated" : `failed: ${angelAuthError}`,
