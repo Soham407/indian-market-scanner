@@ -52,7 +52,15 @@ function getThreshold(
   fallback: number,
 ): number {
   const value = thresholds?.[key];
-  return typeof value === "number" && Number.isFinite(value) ? value : fallback;
+  let result = typeof value === "number" && Number.isFinite(value) ? value : fallback;
+
+  if (key === "max_drawdown_limit") {
+    result = Math.max(result, 0);
+  } else if (key === "sample_threshold") {
+    result = Math.max(result, 1);
+  }
+
+  return result;
 }
 
 export function calculateFeedbackMetrics(
@@ -118,8 +126,11 @@ export function decideLifecycleTransition(
   const profitFactor = metrics.profitFactor ?? 0;
   const averageR = metrics.averageR ?? 0;
   const exceedsDrawdownLimit = metrics.maxDrawdown > maxDrawdownLimit;
+  const totalProcessed = metrics.sampleCount + (metrics.rejectionRate > 0
+    ? Math.round(metrics.sampleCount * metrics.rejectionRate / (1 - metrics.rejectionRate))
+    : 0);
 
-  if (metrics.rejectionRate >= 0.5 && metrics.sampleCount >= 10) {
+  if (metrics.rejectionRate >= 0.5 && totalProcessed >= 10) {
     return {
       decision: "disable",
       newStatus: "disabled",

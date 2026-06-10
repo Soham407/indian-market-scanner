@@ -28,7 +28,7 @@ Complete automated trading bot implementing Opening Range Breakout (ORB) strateg
 ### 3. End-of-Day (EOD) Flatten
 - **Timing**: 3:15 PM IST (market close)
 - **Action**: Closes all open positions at latest candle close
-- **Circuit Breaker**: Halts trading if daily loss ≥ ₹3,000 (-3%)
+- **Circuit Breaker**: Halts trading if daily loss ≥ ₹3,000 (-3%); writes the halt to `bot_settings` (the gate the scanners read) and auto-resumes the next trading day via orb-scanner. A manual kill switch from the dashboard stays off until re-enabled.
 - **File**: `supabase/functions/eod-flatten/index.ts`
 
 ### 4. Kill Switch UI

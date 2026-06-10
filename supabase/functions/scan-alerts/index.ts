@@ -3,11 +3,21 @@ import {
   getMarketSessionStatus,
   marketClosedResponse,
 } from "../_shared/market-hours.ts";
+import { ema, rsi, sma } from "../_shared/indicators.ts";
+import { niftyRegimeAllows, scoreSignal } from "../_shared/trade-math.ts";
+import {
+  fetchAtrStops,
+  getNiftyRegime,
+  type NiftyRegime,
+} from "../_shared/signal-helpers.ts";
+
+const QUALITY_SCORE_THRESHOLD = 60;
 
 type Instrument = {
   id: string;
   symbol: string;
   last_price: number | null;
+  angel_one_token: string | null;
   previous_day_high: number | null;
   previous_day_low: number | null;
   vwap: number | null;
@@ -43,12 +53,242 @@ type StrategyLookup = {
   name: string;
 };
 
+type DailyCandle = [string, number, number, number, number, number];
+type AngelAuth = { apiKey: string; jwtToken: string };
+
+const OR_BREAKOUT_WHITELIST = new Set([
+  "INDUSINDBK",
+  "RELIANCE",
+  "TATASTEEL",
+  "TITAN",
+  "WIPRO",
+]);
+
+// Cache Angel One auth token to avoid re-auth every minute (tokens valid ~30m)
+let cachedAngelAuth: AngelAuth | null = null;
+let cachedAngelAuthExpiry: number = 0;
+const ANGEL_AUTH_CACHE_TTL_MS = 25 * 60 * 1000; // 25 minutes
+const ANGEL_API_TIMEOUT_MS = 10_000; // 10 seconds
+
 // ---------------------------------------------------------------------------
 // Time helpers (IST = UTC+5:30)
 // ---------------------------------------------------------------------------
 
 function todayIst(): string {
   return new Date(Date.now() + 5.5 * 3600 * 1000).toISOString().slice(0, 10);
+}
+
+function tradingDateForScan(): string {
+  const nowMs = Date.now() + 5.5 * 3600 * 1000;
+  const now = new Date(nowMs);
+  const dow = now.getUTCDay();
+  const hm = now.getUTCHours() * 60 + now.getUTCMinutes();
+  const marketCloseIstMin = 930; // 15:30 IST
+  if (dow >= 1 && dow <= 5 && hm >= marketCloseIstMin) {
+    return now.toISOString().slice(0, 10);
+  }
+  const back = dow === 0 ? 2 : dow === 1 ? 3 : 1;
+  return new Date(nowMs - back * 86400 * 1000).toISOString().slice(0, 10);
+}
+
+function historicalFromDate(): string {
+  const d = new Date(Date.now() + 5.5 * 3600 * 1000 - 120 * 86400 * 1000);
+  return d.toISOString().slice(0, 10) + " 09:00";
+}
+
+async function generateTotp(secret: string): Promise<string> {
+  const stripped = secret.replace(/[-\s]/g, "");
+  const isHex = /^[0-9a-fA-F]+$/.test(stripped) && stripped.length % 2 === 0;
+  let keyBytes: Uint8Array;
+  if (isHex) {
+    keyBytes = new Uint8Array(stripped.length / 2);
+    for (let i = 0; i < keyBytes.length; i++) {
+      keyBytes[i] = parseInt(stripped.slice(i * 2, i * 2 + 2), 16);
+    }
+  } else {
+    const alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZ234567";
+    const cleaned = stripped.toUpperCase().replace(/=/g, "");
+    let bits = "";
+    for (const ch of cleaned) {
+      const v = alphabet.indexOf(ch);
+      bits += (v === -1 ? 0 : v).toString(2).padStart(5, "0");
+    }
+    keyBytes = new Uint8Array(Math.floor(bits.length / 8));
+    for (let i = 0; i < keyBytes.length; i++) {
+      keyBytes[i] = parseInt(bits.slice(i * 8, i * 8 + 8), 2);
+    }
+  }
+  const counter = Math.floor(Date.now() / 1000 / 30);
+  const msg = new Uint8Array(8);
+  let c = counter;
+  for (let i = 7; i >= 0; i--) {
+    msg[i] = c & 0xff;
+    c = Math.floor(c / 256);
+  }
+  const keyData = new ArrayBuffer(keyBytes.byteLength);
+  new Uint8Array(keyData).set(keyBytes);
+  const key = await crypto.subtle.importKey("raw", keyData, { name: "HMAC", hash: "SHA-1" }, false, ["sign"]);
+  const mac = new Uint8Array(await crypto.subtle.sign("HMAC", key, msg));
+  const offset = mac[19] & 0x0f;
+  const code = ((mac[offset] & 0x7f) << 24) | ((mac[offset + 1] & 0xff) << 16) | ((mac[offset + 2] & 0xff) << 8) | (mac[offset + 3] & 0xff);
+  return (code % 1_000_000).toString().padStart(6, "0");
+}
+
+function angelHeaders(apiKey: string, jwtToken?: string): Record<string, string> {
+  const h: Record<string, string> = {
+    "Content-Type": "application/json",
+    "Accept": "application/json",
+    "X-UserType": "USER",
+    "X-SourceID": "WEB",
+    "X-ClientLocalIP": "127.0.0.1",
+    "X-ClientPublicIP": "1.1.1.1",
+    "X-MACAddress": "00-00-00-00-00-00",
+    "X-PrivateKey": apiKey,
+  };
+  if (jwtToken) h["Authorization"] = `Bearer ${jwtToken}`;
+  return h;
+}
+
+async function fetchWithTimeout<T>(
+  url: string,
+  opts: RequestInit = {},
+  timeoutMs: number = ANGEL_API_TIMEOUT_MS,
+): Promise<T> {
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    const resp = await fetch(url, { ...opts, signal: controller.signal });
+    return await resp.json();
+  } finally {
+    clearTimeout(timeoutId);
+  }
+}
+
+async function authenticateAngelOne(): Promise<AngelAuth> {
+  // Check cache first
+  if (cachedAngelAuth && Date.now() < cachedAngelAuthExpiry) {
+    return cachedAngelAuth;
+  }
+
+  const apiKey = Deno.env.get("AngelOne_Apikey");
+  const secretKey = Deno.env.get("AngelOne_SecretKey");
+  const clientId = Deno.env.get("AngelOne_ClientID");
+  const pin = Deno.env.get("AngelOne_PIN");
+  if (!apiKey || !secretKey || !clientId || !pin) {
+    throw new Error("[scan-alerts] Missing Angel One secrets (AngelOne_Apikey, AngelOne_SecretKey, AngelOne_ClientID, AngelOne_PIN)");
+  }
+
+  try {
+    const totp = await generateTotp(secretKey);
+    const data = await fetchWithTimeout<{
+      status?: boolean;
+      message?: string;
+      data?: { jwtToken?: string };
+    }>(
+      "https://apiconnect.angelone.in/rest/auth/angelbroking/user/v1/loginByPassword",
+      {
+        method: "POST",
+        headers: angelHeaders(apiKey),
+        body: JSON.stringify({ clientcode: clientId, password: pin, totp }),
+      },
+      ANGEL_API_TIMEOUT_MS,
+    );
+
+    if (!data?.status || !data?.data?.jwtToken) {
+      throw new Error(`Angel One login failed: ${data?.message ?? JSON.stringify(data)}`);
+    }
+
+    const auth = { apiKey, jwtToken: data.data.jwtToken };
+    cachedAngelAuth = auth;
+    cachedAngelAuthExpiry = Date.now() + ANGEL_AUTH_CACHE_TTL_MS;
+    return auth;
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    throw new Error(`[scan-alerts] Angel One auth failed: ${msg}`);
+  }
+}
+
+async function fetchDailyCandles(
+  apiKey: string,
+  jwtToken: string,
+  token: string,
+): Promise<DailyCandle[]> {
+  try {
+    const todate = tradingDateForScan() + " 15:30";
+    const data = await fetchWithTimeout<Record<string, unknown>>(
+      "https://apiconnect.angelone.in/rest/secure/angelbroking/historical/v1/getCandleData",
+      {
+        method: "POST",
+        headers: angelHeaders(apiKey, jwtToken),
+        body: JSON.stringify({
+          exchange: "NSE",
+          symboltoken: token,
+          interval: "ONE_DAY",
+          fromdate: historicalFromDate(),
+          todate,
+        }),
+      },
+      ANGEL_API_TIMEOUT_MS,
+    );
+    return (data?.data ?? []) as DailyCandle[];
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    console.error(`[scan-alerts] fetchDailyCandles failed for token ${token}: ${msg}`);
+    return [];
+  }
+}
+
+function dailyAtr(highs: number[], lows: number[], closes: number[], period = 14): number {
+  if (closes.length < period + 1) return NaN;
+  const trs: number[] = [];
+  for (let i = 1; i < closes.length; i++) {
+    trs.push(
+      Math.max(
+        highs[i] - lows[i],
+        Math.abs(highs[i] - closes[i - 1]),
+        Math.abs(lows[i] - closes[i - 1]),
+      ),
+    );
+  }
+  return sma(trs.slice(-period), period);
+}
+
+async function passesOrBreakoutDailyGate(
+  inst: Instrument,
+  auth: AngelAuth,
+): Promise<boolean> {
+  if (!OR_BREAKOUT_WHITELIST.has(inst.symbol)) return false;
+  if (!inst.angel_one_token) return false;
+
+  const candles = await fetchDailyCandles(auth.apiKey, auth.jwtToken, inst.angel_one_token);
+  if (candles.length < 21) return false;
+
+  // Use the most recent fully completed daily bar as the regime anchor.
+  // The last returned bar is the current trading day, so we only use its open
+  // for the gap check and keep all indicator inputs on prior completed bars.
+  const latestBar = candles[candles.length - 1];
+  const priorBar = candles[candles.length - 2];
+  const history = candles.slice(0, -1);
+  const highs = history.map((c) => c[2]);
+  const lows = history.map((c) => c[3]);
+  const closes = history.map((c) => c[4]);
+  const regimeClose = closes[closes.length - 1];
+  const regimeOpen = latestBar[1];
+  const prevClose = priorBar[4];
+  const ema5Val = ema(closes, 5);
+  const rsiVal = rsi(closes, 14);
+  const atrVal = dailyAtr(highs, lows, closes, 14);
+  if ([regimeClose, regimeOpen, prevClose, ema5Val, rsiVal, atrVal].some((v) => !Number.isFinite(v))) {
+    return false;
+  }
+
+  const gapPct = (regimeOpen - prevClose) / prevClose;
+  return (
+    regimeClose > ema5Val &&
+    rsiVal > 55 &&
+    gapPct <= -0.005 &&
+    (atrVal / regimeClose) > 0.02
+  );
 }
 
 function isMorningTrapWindow(): boolean {
@@ -149,8 +389,11 @@ function toBotSignal(
 async function enqueueBotSignals(
   supabase: ReturnType<typeof createServiceClient>,
   alerts: AlertCandidate[],
-): Promise<{ queued: number; skipped: number; error?: string }> {
-  if (alerts.length === 0) return { queued: 0, skipped: 0 };
+  instrumentById: Map<string, Instrument>,
+  regime: NiftyRegime,
+  today: string,
+): Promise<{ queued: number; queued_shadow: number; skipped: number; error?: string }> {
+  if (alerts.length === 0) return { queued: 0, queued_shadow: 0, skipped: 0 };
 
   const patterns = [...new Set(alerts.map((alert) => patternFromDedupeKey(alert.dedupe_key)).filter((pattern): pattern is string => !!pattern))];
   const { data: strategies, error: strategyError } = await supabase
@@ -160,7 +403,7 @@ async function enqueueBotSignals(
     .eq("enabled", true)
     .neq("lifecycle_status", "disabled");
 
-  if (strategyError) return { queued: 0, skipped: alerts.length, error: strategyError.message };
+  if (strategyError) return { queued: 0, queued_shadow: 0, skipped: alerts.length, error: strategyError.message };
 
   const strategyByName = new Map((strategies ?? []).map((strategy: StrategyLookup) => [strategy.name, strategy.id]));
   const nowIso = new Date().toISOString();
@@ -170,7 +413,11 @@ async function enqueueBotSignals(
     return strategyId ? [toBotSignal(alert, strategyId, nowIso)] : [];
   });
 
-  if (signals.length === 0) return { queued: 0, skipped: alerts.length };
+  if (signals.length === 0) return { queued: 0, queued_shadow: 0, skipped: alerts.length };
+
+  const signalKeys = signals
+    .map((signal) => signal.metadata?.alert_dedupe_key)
+    .filter((key): key is string => typeof key === "string");
 
   const { data: existingSignals, error: existingSignalsError } = await supabase
     .from("bot_trade_signals")
@@ -178,7 +425,7 @@ async function enqueueBotSignals(
     .in("metadata->>alert_dedupe_key", signalKeys)
     .in("status", ["pending", "shadow_tracked", "accepted"]);
   if (existingSignalsError) {
-    return { queued: 0, skipped: alerts.length, error: existingSignalsError.message };
+    return { queued: 0, queued_shadow: 0, skipped: alerts.length, error: existingSignalsError.message };
   }
 
   const existingSignalKeys = new Set(
@@ -190,22 +437,84 @@ async function enqueueBotSignals(
     !existingSignalKeys.has(signal.metadata.alert_dedupe_key as string)
   );
 
-  if (missingSignals.length === 0) return { queued: 0, skipped: alerts.length };
+  if (missingSignals.length === 0) return { queued: 0, queued_shadow: 0, skipped: alerts.length };
 
   let queued = 0;
+  let queuedShadow = 0;
   for (const signal of missingSignals) {
-    const { error } = await supabase.from("bot_trade_signals").insert(signal);
+    // ── Selective engine: ATR geometry, quality score, NIFTY regime ──────────
+    const inst = instrumentById.get(signal.instrument_id);
+
+    const atrStops = await fetchAtrStops(
+      supabase,
+      signal.instrument_id,
+      signal.side as "long" | "short",
+      signal.trigger_price,
+    );
+    signal.stop_loss_price = atrStops.stopLossPrice;
+    // Keep a strategy-supplied target (e.g. measured move) only when it is
+    // farther than the 1.5R ATR target — never closer.
+    const atrTargetFarther = signal.side === "long"
+      ? atrStops.targetPrice > signal.target_price
+      : atrStops.targetPrice < signal.target_price;
+    if (atrTargetFarther) signal.target_price = atrStops.targetPrice;
+
+    const orRangePct =
+      inst?.or_high && inst?.or_low && inst?.last_price && inst.or_date === today
+        ? (inst.or_high - inst.or_low) / inst.last_price
+        : null;
+    const stockMovePct = inst?.vwap && inst?.last_price
+      ? (inst.last_price - inst.vwap) / inst.vwap
+      : 0;
+    const niftyOrMid = regime.orHigh !== null && regime.orLow !== null
+      ? (regime.orHigh + regime.orLow) / 2
+      : null;
+    const niftyMovePct = regime.spot !== null && niftyOrMid !== null && niftyOrMid > 0
+      ? (regime.spot - niftyOrMid) / niftyOrMid
+      : null;
+
+    const { score, components } = scoreSignal({
+      volumeMultiplier: (signal.metadata.volume_multiplier as number) ?? 1,
+      orRangePct,
+      stockMovePct,
+      niftyMovePct,
+      side: signal.side as "long" | "short",
+      minutesSinceOpenIst: minutesSinceOpen(),
+    });
+
+    const regimeAllowed = niftyRegimeAllows(
+      signal.side as "long" | "short",
+      regime.spot,
+      regime.orHigh,
+      regime.orLow,
+    );
+
+    const isPending = regimeAllowed && score >= QUALITY_SCORE_THRESHOLD;
+    const row = {
+      ...signal,
+      status: isPending ? "pending" : "shadow_tracked",
+      metadata: {
+        ...signal.metadata,
+        quality_score: score,
+        score_components: components,
+        ...(regimeAllowed ? {} : { shadow_reason: "nifty_regime" }),
+        ...(regimeAllowed && score < QUALITY_SCORE_THRESHOLD
+          ? { shadow_reason: "quality_score_below_threshold" }
+          : {}),
+      },
+    };
+
+    const { error } = await supabase.from("bot_trade_signals").insert(row);
     if (error) {
       const isDuplicateRace = "code" in error && error.code === "23505";
       if (isDuplicateRace) continue;
-      return { queued, skipped: alerts.length - queued, error: error.message };
+      return { queued, queued_shadow: queuedShadow, skipped: alerts.length - queued, error: error.message };
     }
-    queued++;
+    if (isPending) queued++;
+    else queuedShadow++;
   }
 
-  return { queued, skipped: alerts.length - queued };
-
-  return { queued: missingSignals.length, skipped: alerts.length - missingSignals.length };
+  return { queued, queued_shadow: queuedShadow, skipped: alerts.length - queued - queuedShadow };
 }
 
 // ---------------------------------------------------------------------------
@@ -228,7 +537,7 @@ Deno.serve(async () => {
   const { data: instruments, error } = await supabase
     .from("instruments")
     .select(
-      "id,symbol,last_price,previous_day_high,previous_day_low,vwap," +
+      "id,symbol,last_price,angel_one_token,previous_day_high,previous_day_low,vwap," +
       "session_high,session_low,session_volume,session_date,prev_day_volume," +
       "or_high,or_low,or_date",
     )
@@ -237,15 +546,32 @@ Deno.serve(async () => {
   if (error) return Response.json({ error: error.message }, { status: 500 });
 
   const today = todayIst();
-  const alerts = ((instruments ?? []) as unknown as Instrument[]).flatMap((inst) => {
+  const hasOrBreakoutCandidate = (instruments ?? []).some((rawInst) => {
+    const inst = rawInst as unknown as Instrument;
+    return OR_BREAKOUT_WHITELIST.has(inst.symbol) && !!inst.angel_one_token;
+  });
+
+  let angelAuth: AngelAuth | null = null;
+  let angelAuthError: string | null = null;
+  if (hasOrBreakoutCandidate) {
+    try {
+      angelAuth = await authenticateAngelOne();
+    } catch (err) {
+      angelAuthError = err instanceof Error ? err.message : String(err);
+      console.error(angelAuthError);
+    }
+  }
+
+  const alerts = (await Promise.all((instruments ?? []).map(async (rawInst) => {
+    const inst = rawInst as unknown as Instrument;
     const bearish = buildBearishAlert(inst, today);
     const bullish = buildBullishAlert(inst, today);
     const orBearish = buildOrTrapBearish(inst, today);
     const orBullish = buildOrTrapBullish(inst, today);
-    const orBreakBullish = buildOrBreakoutBullish(inst, today);
-    const orBreakBearish = buildOrBreakoutBearish(inst, today);
+    const orBreakBullish = angelAuth ? await buildOrBreakoutBullish(inst, today, angelAuth) : null;
+    const orBreakBearish = angelAuth ? await buildOrBreakoutBearish(inst, today, angelAuth) : null;
     return [bearish, bullish, orBearish, orBullish, orBreakBullish, orBreakBearish].filter(Boolean);
-  }) as AlertCandidate[];
+  }))).flat() as AlertCandidate[];
 
   if (alerts.length === 0) return Response.json({ inserted: 0 });
 
@@ -268,14 +594,27 @@ Deno.serve(async () => {
     await sendTelegramAlerts(newAlerts);
   }
 
-  const botQueue = await enqueueBotSignals(supabase, alerts as AlertCandidate[]);
+  const instrumentById = new Map<string, Instrument>(
+    ((instruments ?? []) as unknown as Instrument[]).map((inst) => [inst.id, inst]),
+  );
+  const regime = await getNiftyRegime(supabase, today);
+  const botQueue = await enqueueBotSignals(
+    supabase,
+    alerts as AlertCandidate[],
+    instrumentById,
+    regime,
+    today,
+  );
 
   return Response.json({
     upserted: alerts.length,
     new_alerts: newAlerts.length,
     bot_signals_queued: botQueue.queued,
+    bot_signals_shadow: botQueue.queued_shadow,
     bot_signals_skipped: botQueue.skipped,
     bot_signal_error: botQueue.error ?? null,
+    angel_auth_status: angelAuth ? "authenticated" : `failed: ${angelAuthError}`,
+    or_breakout_signals: alerts.filter(a => (a.dedupe_key as string).includes("or_breakout")).length,
   });
 });
 
@@ -516,8 +855,10 @@ function buildOrTrapBullish(inst: Instrument, today: string) {
 // Window extends to 14:30 IST to catch afternoon momentum sessions.
 // ---------------------------------------------------------------------------
 
-function buildOrBreakoutBullish(inst: Instrument, today: string) {
+async function buildOrBreakoutBullish(inst: Instrument, today: string, auth: AngelAuth) {
   if (!isOrBreakoutWindow()) return null;
+  if (!OR_BREAKOUT_WHITELIST.has(inst.symbol)) return null;
+  if (!(await passesOrBreakoutDailyGate(inst, auth))) return null;
 
   const { id, symbol, last_price, or_high, or_low, or_date, vwap,
           session_high, session_volume, prev_day_volume } = inst;
@@ -582,8 +923,10 @@ function buildOrBreakoutBullish(inst: Instrument, today: string) {
 // Short the momentum — price likely heading lower.
 // ---------------------------------------------------------------------------
 
-function buildOrBreakoutBearish(inst: Instrument, today: string) {
+async function buildOrBreakoutBearish(inst: Instrument, today: string, auth: AngelAuth) {
   if (!isOrBreakoutWindow()) return null;
+  if (!OR_BREAKOUT_WHITELIST.has(inst.symbol)) return null;
+  if (!(await passesOrBreakoutDailyGate(inst, auth))) return null;
 
   const { id, symbol, last_price, or_low, or_high, or_date, vwap,
           session_low, session_volume, prev_day_volume } = inst;

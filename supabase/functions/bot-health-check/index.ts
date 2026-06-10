@@ -97,12 +97,66 @@ Deno.serve(async () => {
   // Check trading status
   const { data: config } = await supabase
     .from("bot_settings")
-    .select("trading_enabled, kill_switch_reason")
+    .select("trading_enabled, kill_switch_reason, watchdog_alerted_date")
     .eq("id", 1)
     .single();
 
   const tradingEnabled = config?.trading_enabled ?? true;
   const circuitBreakerActive = !tradingEnabled && !!config?.kill_switch_reason;
+
+  // ── Watchdog: detect a silently dead pipeline ─────────────────────────────
+  // The June 5–10 2026 outage produced zero trades for 3 market days with the
+  // dashboard showing green. After 11:00 IST on a trading day with trading
+  // enabled, alert once per day if nothing is flowing.
+  let watchdogAlert: string | null = null;
+  if (
+    tradingEnabled &&
+    minutesSinceMidnight >= 11 * 60 &&
+    config?.watchdog_alerted_date !== session.istDate
+  ) {
+    const dayStartUtc = `${session.istDate}T03:45:00Z`;
+
+    const { count: tradesToday } = await supabase
+      .from("bot_paper_trades")
+      .select("id", { count: "exact", head: true })
+      .gte("entry_time", dayStartUtc);
+
+    const { count: signalsToday } = await supabase
+      .from("bot_trade_signals")
+      .select("id", { count: "exact", head: true })
+      .gte("signal_time", dayStartUtc);
+
+    const { data: newestCandle } = await supabase
+      .from("bot_candles")
+      .select("candle_open_at")
+      .order("candle_open_at", { ascending: false })
+      .limit(1);
+
+    const newestCandleAgeMin = newestCandle && newestCandle.length > 0
+      ? (nowMs - new Date(newestCandle[0].candle_open_at).getTime()) / 60000
+      : Infinity;
+
+    if (newestCandleAgeMin > 10) {
+      watchdogAlert = `candle ingestion dead — newest candle is ${
+        Number.isFinite(newestCandleAgeMin) ? `${Math.floor(newestCandleAgeMin)} min old` : "missing"
+      } (refresh-prices cron?)`;
+    } else if ((signalsToday ?? 0) === 0 && (tradesToday ?? 0) === 0) {
+      watchdogAlert = "no signals and no trades today despite trading enabled (scan-alerts/orb-scanner crons?)";
+    }
+
+    if (watchdogAlert) {
+      await sendTelegramNotification({
+        type: "error",
+        symbol: "WATCHDOG",
+        timestamp: now.toISOString(),
+        message: `🐶 Watchdog: bot may be silently dead — ${watchdogAlert}`,
+      });
+      await supabase
+        .from("bot_settings")
+        .update({ watchdog_alerted_date: session.istDate })
+        .eq("id", 1);
+    }
+  }
 
   // Count open trades
   const { data: openTrades, count } = await supabase
@@ -149,5 +203,6 @@ Deno.serve(async () => {
     daily_pnl: dailyPnl,
     trading_enabled: tradingEnabled,
     circuit_breaker_active: circuitBreakerActive,
+    watchdog_alert: watchdogAlert,
   });
 });

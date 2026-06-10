@@ -82,10 +82,11 @@ Deno.serve(async () => {
   // Check bot_settings to see if circuit breaker is already active
   const { data: config } = await supabase
     .from("bot_settings")
-    .select("trading_enabled, kill_switch_reason")
+    .select("trading_enabled, kill_switch_reason, circuit_breaker_tripped_at")
     .eq("id", 1)
     .single();
   const tradingEnabled = config?.trading_enabled ?? true;
+  const breakerPaused = !tradingEnabled && !!config?.circuit_breaker_tripped_at;
 
   // --- Build message ---
   const pnlLine  = `${totalNet >= 0 ? "🟢" : "🔴"} NET P&L:    ${rs(totalNet)}`;
@@ -114,8 +115,10 @@ Deno.serve(async () => {
         .join("\n")
     : "  None — all squared off ✅";
 
-  const tomorrowLine = !tradingEnabled
-    ? "⛔ Circuit breaker active — bot PAUSED\n  Re-enable: set trading_enabled=true in bot_settings"
+  const tomorrowLine = breakerPaused
+    ? "⛔ Circuit breaker tripped today — auto-resumes tomorrow at 9:15 AM IST"
+    : !tradingEnabled
+    ? `⛔ Bot PAUSED (kill switch${config?.kill_switch_reason ? `: ${config.kill_switch_reason}` : ""})\n  Re-enable from the dashboard`
     : "✅ Bot resumes at 9:15 AM IST";
 
   const bestTrade  = trades[0];

@@ -99,34 +99,38 @@ Deno.serve(async () => {
       })
       .eq("id", trade.id);
 
-    if (!updateError) {
-      const exitTimeIso = now.toISOString();
-      const durationMinutes = Math.max(
-        0,
-        Math.round((new Date(exitTimeIso).getTime() - new Date(trade.entry_time).getTime()) / 60000),
-      );
-      const rMultiple = trade.risk_amount > 0 ? netPnl / trade.risk_amount : null;
-
-      const { error: outcomeError } = await supabase
-        .from("bot_signal_outcomes")
-        .update({
-          exit_price: exitPriceWithSlippage,
-          exit_reason: "eod",
-          gross_pnl: grossPnl,
-          net_pnl: netPnl,
-          r_multiple: rMultiple,
-          duration_minutes: durationMinutes,
-          status: "closed",
-          closed_at: exitTimeIso,
-        })
-        .eq("paper_trade_id", trade.id);
-
-      if (outcomeError) {
-        console.error("[eod-flatten] failed to update bot_signal_outcomes:", outcomeError.message);
-      }
-
-      tradesFlattened++;
+    if (updateError) {
+      console.error("[eod-flatten] failed to update bot_paper_trades:", updateError.message);
+      continue;
     }
+
+    const exitTimeIso = now.toISOString();
+    const durationMinutes = Math.max(
+      0,
+      Math.round((new Date(exitTimeIso).getTime() - new Date(trade.entry_time).getTime()) / 60000),
+    );
+    const rMultiple = trade.risk_amount > 0 ? netPnl / trade.risk_amount : null;
+
+    const { error: outcomeError } = await supabase
+      .from("bot_signal_outcomes")
+      .update({
+        exit_price: exitPriceWithSlippage,
+        exit_reason: "eod",
+        gross_pnl: grossPnl,
+        net_pnl: netPnl,
+        r_multiple: rMultiple,
+        duration_minutes: durationMinutes,
+        status: "closed",
+        closed_at: exitTimeIso,
+      })
+      .eq("paper_trade_id", trade.id);
+
+    if (outcomeError) {
+      console.error("[eod-flatten] failed to update bot_signal_outcomes:", outcomeError.message);
+      continue;
+    }
+
+    tradesFlattened++;
   }
 
   // -------------------------------------------------------------------------
@@ -176,11 +180,23 @@ Deno.serve(async () => {
   // 5. Circuit breaker check
   // -------------------------------------------------------------------------
   if (totalNet <= DAILY_LOSS_CIRCUIT_BREAKER) {
+    // bot_settings is the gate orb-scanner and bot-signal-executor read;
+    // bot_config only feeds the dashboard's breaker banner. Write both.
+    // circuit_breaker_tripped_at marks this as a breaker pause so
+    // orb-scanner auto-resumes trading the next IST day.
     await supabase
       .from("bot_settings")
       .update({
         trading_enabled: false,
         kill_switch_reason: `Daily loss ₹${totalNet.toFixed(0)} exceeded ₹3,000 limit`,
+        circuit_breaker_tripped_at: now.toISOString(),
+      })
+      .eq("id", 1);
+
+    await supabase
+      .from("bot_config")
+      .update({
+        circuit_breaker_triggered_at: now.toISOString(),
       })
       .eq("id", 1);
 
