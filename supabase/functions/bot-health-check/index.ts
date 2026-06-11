@@ -126,6 +126,15 @@ Deno.serve(async () => {
       .select("id", { count: "exact", head: true })
       .gte("signal_time", dayStartUtc);
 
+    // Count signals that weren't immediately shadow-routed — i.e. reached the executor
+    // as pending/accepted. If this is zero but signalsToday > 0, the selective engine
+    // is shadow-tracking everything (quality score / NIFTY regime blocking all trades).
+    const { count: liveCandidatesToday } = await supabase
+      .from("bot_trade_signals")
+      .select("id", { count: "exact", head: true })
+      .gte("signal_time", dayStartUtc)
+      .neq("status", "shadow_tracked");
+
     const { data: newestCandle } = await supabase
       .from("bot_candles")
       .select("candle_open_at")
@@ -140,6 +149,8 @@ Deno.serve(async () => {
       watchdogAlert = `candle ingestion dead — newest candle is ${
         Number.isFinite(newestCandleAgeMin) ? `${Math.floor(newestCandleAgeMin)} min old` : "missing"
       } (refresh-prices cron?)`;
+    } else if ((signalsToday ?? 0) > 0 && (liveCandidatesToday ?? 0) === 0 && (tradesToday ?? 0) === 0) {
+      watchdogAlert = `${signalsToday} signal(s) generated but all shadow-tracked — selective engine blocking all trades (quality score / NIFTY regime?)`;
     } else if ((signalsToday ?? 0) === 0 && (tradesToday ?? 0) === 0) {
       watchdogAlert = "no signals and no trades today despite trading enabled (scan-alerts/orb-scanner crons?)";
     }

@@ -79,6 +79,52 @@ Deno.test("health: marks healthy if few instruments stale", () => {
   assertEquals(health, "healthy");
 });
 
+// Watchdog condition logic
+Deno.test("watchdog: all-shadowed signals triggers selective-engine alert", () => {
+  const signalsToday: number = 6;
+  const liveCandidatesToday: number = 0; // all shadow_tracked
+  const tradesToday: number = 0;
+
+  let watchdogAlert: string | null = null;
+  if (signalsToday > 0 && liveCandidatesToday === 0 && tradesToday === 0) {
+    watchdogAlert = `${signalsToday} signal(s) generated but all shadow-tracked — selective engine blocking all trades (quality score / NIFTY regime?)`;
+  } else if (signalsToday === 0 && tradesToday === 0) {
+    watchdogAlert = "no signals and no trades today despite trading enabled (scan-alerts/orb-scanner crons?)";
+  }
+
+  assertEquals(watchdogAlert, "6 signal(s) generated but all shadow-tracked — selective engine blocking all trades (quality score / NIFTY regime?)");
+});
+
+Deno.test("watchdog: silent when some signals are live candidates", () => {
+  const signalsToday: number = 6;
+  const liveCandidatesToday: number = 2; // some got through
+  const tradesToday: number = 0;
+
+  let watchdogAlert: string | null = null;
+  if (signalsToday > 0 && liveCandidatesToday === 0 && tradesToday === 0) {
+    watchdogAlert = `${signalsToday} signal(s) generated but all shadow-tracked — selective engine blocking all trades (quality score / NIFTY regime?)`;
+  } else if (signalsToday === 0 && tradesToday === 0) {
+    watchdogAlert = "no signals and no trades today despite trading enabled (scan-alerts/orb-scanner crons?)";
+  }
+
+  assertEquals(watchdogAlert, null);
+});
+
+Deno.test("watchdog: zero-everything still fires pipeline-dead alert", () => {
+  const signalsToday: number = 0;
+  const liveCandidatesToday: number = 0;
+  const tradesToday: number = 0;
+
+  let watchdogAlert: string | null = null;
+  if (signalsToday > 0 && liveCandidatesToday === 0 && tradesToday === 0) {
+    watchdogAlert = `${signalsToday} signal(s) generated but all shadow-tracked — selective engine blocking all trades (quality score / NIFTY regime?)`;
+  } else if (signalsToday === 0 && tradesToday === 0) {
+    watchdogAlert = "no signals and no trades today despite trading enabled (scan-alerts/orb-scanner crons?)";
+  }
+
+  assertEquals(watchdogAlert, "no signals and no trades today despite trading enabled (scan-alerts/orb-scanner crons?)");
+});
+
 // Status message construction
 Deno.test("health: constructs status with trading enabled", () => {
   const tradingEnabled = true;
