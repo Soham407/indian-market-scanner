@@ -8,7 +8,7 @@
 // the 6-month lookback momentum needs). Per-ticker failures are skipped, not fatal.
 import { createServiceClient } from "../_shared/supabase.ts";
 import { sendTelegramNotification } from "../_shared/telegram.ts";
-import { rankTopN, rebalanceDelta, settleDelivery, sizeShares, trailingReturn } from "../_shared/momentum.ts";
+import { rankTopN, rebalanceDelta, settleDelivery, sizeShares, summarizePnl, trailingReturn } from "../_shared/momentum.ts";
 
 const LOOKBACK = 126;   // ~6 trading months
 const HOLD_TOP = 5;     // ₹50k / 5 = ₹10k per name
@@ -124,15 +124,46 @@ Deno.serve(async () => {
     log.push(`BUY ${sym} ${shares}@${px.toFixed(1)}`);
   }
 
-  if (buy.length || sell.length) {
-    await sendTelegramNotification({
-      type: "heartbeat", symbol: "MOMENTUM", timestamp: new Date().toISOString(),
-      message: `📈 Momentum rebalance (paper ₹${capital.toLocaleString("en-IN")})\n` +
-        `hold: ${target.join(", ")}\nclosed net ₹${netClosed.toFixed(0)}\n${log.join("\n")}`,
-    });
+  // -------------------------------------------------------------------------
+  // Monthly P&L summary — realized (all closed) + mark-to-market on open holds.
+  // Sent EVERY run so you can watch the paper account build, rebalance or not.
+  // -------------------------------------------------------------------------
+  const { data: closedRows } = await supabase
+    .from("bot_paper_trades").select("net_pnl")
+    .eq("strategy_id", strat.id).eq("status", "closed");
+  const closedNets = (closedRows ?? []).map((r) => Number(r.net_pnl ?? 0));
+
+  const { data: nowOpen } = await supabase
+    .from("bot_paper_trades")
+    .select("entry_price,shares,instruments(symbol)")
+    .eq("strategy_id", strat.id).eq("status", "open");
+  const openUnrealized: number[] = [];
+  const holdLines: string[] = [];
+  for (const r of (nowOpen ?? [])) {
+    const sym = (Array.isArray(r.instruments) ? r.instruments[0] : r.instruments as { symbol: string } | null)?.symbol;
+    const px = sym ? lastClose[sym] : undefined;
+    if (!px) continue;
+    const u = settleDelivery(Number(r.entry_price), px, r.shares).net_pnl;
+    openUnrealized.push(u);
+    holdLines.push(`  ${sym}: ${u >= 0 ? "+" : ""}₹${u.toFixed(0)}`);
   }
 
+  const pnl = summarizePnl(closedNets, openUnrealized, capital);
+  const sign = pnl.total >= 0 ? "🟢" : "🔴";
+  const changes = (buy.length || sell.length)
+    ? `\nRebalance: ${log.join(", ")}` : "\nNo rebalance changes this month.";
+  await sendTelegramNotification({
+    type: "heartbeat", symbol: "MOMENTUM", timestamp: new Date().toISOString(),
+    message:
+      `📈 Momentum monthly summary (paper ₹${capital.toLocaleString("en-IN")})\n` +
+      `${sign} Total P&L: ${pnl.total >= 0 ? "+" : ""}₹${pnl.total.toFixed(0)} (${pnl.totalPct >= 0 ? "+" : ""}${pnl.totalPct}%)\n` +
+      `   realized ₹${pnl.realized.toFixed(0)} | open (unrealized) ₹${pnl.unrealized.toFixed(0)}\n` +
+      `Closed: ${pnl.wins}W/${pnl.losses}L (${pnl.winRate}% win)\n` +
+      `Holding ${pnl.openCount}:\n${holdLines.join("\n")}` +
+      changes,
+  });
+
   return Response.json({
-    status: "rebalanced", target, bought: buy, sold: sell, net_closed: netClosed,
+    status: "rebalanced", target, bought: buy, sold: sell, net_closed: netClosed, pnl,
   });
 });

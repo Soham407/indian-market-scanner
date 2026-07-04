@@ -1,5 +1,5 @@
 import { assertEquals, assert } from "https://deno.land/std@0.224.0/assert/mod.ts";
-import { trailingReturn, rankTopN, rebalanceDelta, sizeShares, settleDelivery } from "./momentum.ts";
+import { trailingReturn, rankTopN, rebalanceDelta, sizeShares, settleDelivery, summarizePnl } from "./momentum.ts";
 
 Deno.test("trailingReturn: pct over lookback, null if short", () => {
   assert(Math.abs(trailingReturn([100, 110, 120], 2)! - 0.2) < 1e-9); // 120/100 - 1
@@ -36,4 +36,22 @@ Deno.test("settleDelivery: small move eaten by charges (why swing needs big move
   // +0.3% on a ₹10k position is ~₹30 gross vs ~₹60 charges => net negative
   const s = settleDelivery(100, 100.3, 100);
   assert(s.net_pnl < 0, `tiny move should net negative, got ${s.net_pnl}`);
+});
+
+Deno.test("summarizePnl: realized + unrealized vs capital", () => {
+  const s = summarizePnl([500, -200, 300], [150, -50], 50000);
+  assertEquals(s.realized, 600);      // 500-200+300
+  assertEquals(s.unrealized, 100);    // 150-50
+  assertEquals(s.total, 700);
+  assertEquals(s.totalPct, 1.4);      // 700/50000
+  assertEquals(s.wins, 2);
+  assertEquals(s.losses, 1);
+  assert(Math.abs(s.winRate - 66.7) < 0.1);
+  assertEquals(s.openCount, 2);
+});
+
+Deno.test("summarizePnl: empty is all zeros, no divide-by-zero", () => {
+  const s = summarizePnl([], [], 50000);
+  assertEquals(s.total, 0);
+  assertEquals(s.winRate, 0);
 });

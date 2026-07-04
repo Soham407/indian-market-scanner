@@ -46,6 +46,31 @@ export type Settlement = {
   gross_pnl: number; brokerage: number; statutory_charges: number; net_pnl: number;
 };
 
+export type PnlSummary = {
+  realized: number; unrealized: number; total: number; totalPct: number;
+  wins: number; losses: number; winRate: number; openCount: number;
+};
+
+/** Roll up realized (closed nets) + unrealized (open mark-to-market) vs capital. */
+export function summarizePnl(
+  closedNets: number[], openUnrealized: number[], capital: number,
+): PnlSummary {
+  const realized = closedNets.reduce((a, b) => a + b, 0);
+  const unrealized = openUnrealized.reduce((a, b) => a + b, 0);
+  const wins = closedNets.filter((n) => n > 0).length;
+  const losses = closedNets.filter((n) => n < 0).length;
+  const total = realized + unrealized;
+  return {
+    realized: Number(realized.toFixed(2)),
+    unrealized: Number(unrealized.toFixed(2)),
+    total: Number(total.toFixed(2)),
+    totalPct: capital > 0 ? Number((total / capital * 100).toFixed(2)) : 0,
+    wins, losses,
+    winRate: (wins + losses) > 0 ? Number((wins / (wins + losses) * 100).toFixed(1)) : 0,
+    openCount: openUnrealized.length,
+  };
+}
+
 /** Close a long at delivery charges (momentum is CNC, held weeks). */
 export function settleDelivery(entry: number, exit: number, shares: number): Settlement {
   const bv = entry * shares, sv = exit * shares;
