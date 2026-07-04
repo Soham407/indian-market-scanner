@@ -41,11 +41,23 @@ Deno.serve(async () => {
 
   // -------------------------------------------------------------------------
   // 1. Fetch all open trades with full detail for flatten + summary
+  //    EXCLUDING overnight_hold positions — those are held overnight and are
+  //    squared off by overnight-exit at the next open, not flattened here.
   // -------------------------------------------------------------------------
-  const { data: openTrades, error: tradesError } = await supabase
+  const { data: overnightStrat } = await supabase
+    .from("bot_strategies")
+    .select("id")
+    .eq("name", "overnight_hold")
+    .maybeSingle();
+
+  let openTradesQuery = supabase
     .from("bot_paper_trades")
     .select("id,instrument_id,side,entry_price,entry_time,shares,stop_loss_price,target_price,risk_amount,instruments(symbol,name,last_price)")
     .eq("status", "open");
+  if (overnightStrat?.id) {
+    openTradesQuery = openTradesQuery.neq("strategy_id", overnightStrat.id);
+  }
+  const { data: openTrades, error: tradesError } = await openTradesQuery;
 
   if (tradesError) {
     return Response.json({ error: tradesError.message, trades_flattened: 0 });

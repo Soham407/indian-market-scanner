@@ -32,3 +32,8 @@ logs/
 quant-lab/reports/
 *.parquet
 .vercel
+
+# Session tooling / build artifacts
+.fablize/
+__pycache__/
+*.pyc
