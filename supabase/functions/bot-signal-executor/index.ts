@@ -11,7 +11,7 @@ import {
   type StrategyRow,
 } from "./executor.ts";
 
-const BASE_RISK_AMOUNT = 1000;
+const BASE_RISK_AMOUNT = 150; // 1.5% of the ₹10k paper account (was 1000 = 10%, far too high for small capital)
 const DEFAULT_MAX_CONCURRENT_POSITIONS = 20;
 const DEFAULT_MAX_TRADES_PER_DAY = 100;
 const DEFAULT_SIGNAL_LIMIT = 100;
