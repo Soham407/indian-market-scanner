@@ -3,6 +3,7 @@ import {
   assertThrows,
 } from "https://deno.land/std@0.224.0/assert/mod.ts";
 import {
+  align1mCandlesToPoints,
   type AngelInstrument,
   buildPremiumDecayPoint,
   collectOptionTokens,
@@ -185,4 +186,45 @@ Deno.test("indexBatchLtps: indexes numeric quote values and rejects missing cont
     Error,
     "Angel One batch quote omitted MISSING (missing-token)",
   );
+});
+
+Deno.test("align1mCandlesToPoints: correctly builds decay points and baseline from 1m candles", () => {
+  const pair = selectNearestAtmOptionPair(
+    [
+      contract("NIFTY02JUN2625000CE", "2500000"),
+      contract("NIFTY02JUN2625000PE", "2500000"),
+    ],
+    25000,
+    new Date("2026-06-01T04:45:00.000Z"),
+  );
+
+  const indexCandles: [string, number, number, number, number, number][] = [
+    ["2026-06-01T03:45:00.000Z", 25000, 25020, 24990, 25010, 1000],
+    ["2026-06-01T03:46:00.000Z", 25010, 25030, 25000, 25020, 1200],
+  ];
+
+  const ceCandles: [string, number, number, number, number, number][] = [
+    ["2026-06-01T03:45:00.000Z", 100, 105, 95, 102, 500],
+    ["2026-06-01T03:46:00.000Z", 102, 108, 101, 106, 600],
+  ];
+
+  const peCandles: [string, number, number, number, number, number][] = [
+    ["2026-06-01T03:45:00.000Z", 80, 82, 75, 78, 400],
+    ["2026-06-01T03:46:00.000Z", 78, 79, 74, 75, 450],
+  ];
+
+  const points = align1mCandlesToPoints(pair, indexCandles, ceCandles, peCandles);
+
+  assertEquals(points.length, 2);
+  // Bar 1: close 102 vs open 100 => +2 decay; PE close 78 vs open 80 => -2 decay
+  assertEquals(points[0].ce_ltp, 102);
+  assertEquals(points[0].pe_ltp, 78);
+  assertEquals(points[0].ce_decay, 2);
+  assertEquals(points[0].pe_decay, -2);
+
+  // Bar 2: close 106 vs open 100 => +6 decay; PE close 75 vs open 80 => -5 decay
+  assertEquals(points[1].ce_ltp, 106);
+  assertEquals(points[1].pe_ltp, 75);
+  assertEquals(points[1].ce_decay, 6);
+  assertEquals(points[1].pe_decay, -5);
 });

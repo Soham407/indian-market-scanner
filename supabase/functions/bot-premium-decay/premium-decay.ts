@@ -244,3 +244,54 @@ export function buildPremiumDecayPoint(
     pe_decay: peLtp - baselinePeLtp,
   };
 }
+
+export type AngelCandle = [string, number, number, number, number, number];
+
+export function align1mCandlesToPoints(
+  pair: AtmOptionPair,
+  indexCandles: AngelCandle[],
+  ceCandles: AngelCandle[],
+  peCandles: AngelCandle[],
+  seriesKey = PREMIUM_DECAY_SERIES_KEY,
+): ReturnType<typeof buildPremiumDecayPoint>[] {
+  const ceMap = new Map<string, { open: number; close: number }>();
+  for (const c of ceCandles) {
+    ceMap.set(c[0], { open: c[1], close: c[4] });
+  }
+
+  const peMap = new Map<string, { open: number; close: number }>();
+  for (const c of peCandles) {
+    peMap.set(c[0], { open: c[1], close: c[4] });
+  }
+
+  const points: ReturnType<typeof buildPremiumDecayPoint>[] = [];
+  let baseline: { ce_ltp: number; pe_ltp: number } | null = null;
+
+  for (const idx of indexCandles) {
+    const timeStr = idx[0];
+    const underlyingLtp = idx[4]; // close price
+    const ce = ceMap.get(timeStr);
+    const pe = peMap.get(timeStr);
+
+    if (!ce || !pe) continue;
+
+    if (!baseline) {
+      baseline = { ce_ltp: ce.open, pe_ltp: pe.open };
+    }
+
+    const sampleDate = new Date(timeStr);
+    points.push(
+      buildPremiumDecayPoint(
+        sampleDate,
+        pair,
+        underlyingLtp,
+        ce.close,
+        pe.close,
+        baseline,
+        seriesKey,
+      ),
+    );
+  }
+
+  return points;
+}

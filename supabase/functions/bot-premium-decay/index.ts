@@ -4,6 +4,7 @@ import {
 } from "../_shared/market-hours.ts";
 import { createServiceClient } from "../_shared/supabase.ts";
 import {
+  align1mCandlesToPoints,
   type AngelInstrument,
   type AtmOptionPair,
   buildPremiumDecayPoint,
@@ -235,6 +236,37 @@ async function angelBatchLtps(
   );
 }
 
+async function angelCandleData(
+  apiKey: string,
+  jwtToken: string,
+  params: {
+    exchange: string;
+    symboltoken: string;
+    interval: string;
+    fromdate: string;
+    todate: string;
+  },
+): Promise<[string, number, number, number, number, number][]> {
+  return await withAngelRetry(
+    `Angel One getCandleData for token ${params.symboltoken}`,
+    async () => {
+      const response = await fetch(
+        `${ANGEL_BASE}/rest/secure/angelbroking/historical/v1/getCandleData`,
+        {
+          method: "POST",
+          headers: angelHeaders(apiKey, jwtToken),
+          body: JSON.stringify(params),
+        },
+      );
+      const data = await readJsonResponse(
+        response,
+        `Angel One getCandleData for ${params.symboltoken}`,
+      );
+      return (data?.data ?? []) as [string, number, number, number, number, number][];
+    },
+  );
+}
+
 import niftyScripFallback from "../_shared/nifty_scrip_cache.json" with { type: "json" };
 
 async function getScripMaster(): Promise<AngelInstrument[]> {
@@ -373,9 +405,9 @@ Deno.serve(async () => {
     const peLtp = requireBatchLtp(optionLtps, pair.pe.token, pair.pe.symbol);
 
     const startOfSession = `${session.istDate}T03:45:00.000Z`;
-    const { data: baseline, error: baselineError } = await supabase
+    let { data: baseline, error: baselineError } = await supabase
       .from("bot_premium_decay_points")
-      .select("ce_ltp, pe_ltp")
+      .select("ce_ltp, pe_ltp, sampled_at")
       .eq("series_key", PREMIUM_DECAY_SERIES_KEY)
       .gte("sampled_at", startOfSession)
       .order("sampled_at", { ascending: true })
@@ -385,6 +417,62 @@ Deno.serve(async () => {
       throw new Error(
         `Could not read premium decay baseline: ${baselineError.message}`,
       );
+    }
+
+    // Auto-Backfill: If no baseline exists for today's session or if the first sample is late,
+    // fetch 1-minute historical candles from 09:15 AM IST to now.
+    if (!baseline && session.isOpen) {
+      try {
+        console.log(`[bot-premium-decay] No morning baseline found. Running 1-minute candle backfill from 09:15 IST...`);
+        const fromDateStr = `${session.istDate} 09:15`;
+        const toDateStr = `${session.istDate} ${new Date(sampledAt.getTime() + 5.5 * 3600 * 1000).toISOString().slice(11, 16)}`;
+
+        const [indexCandles, ceCandles, peCandles] = await Promise.all([
+          angelCandleData(apiKey, jwtToken, {
+            exchange: NIFTY_INDEX.exchange,
+            symboltoken: NIFTY_INDEX.symbolToken,
+            interval: "ONE_MINUTE",
+            fromdate: fromDateStr,
+            todate: toDateStr,
+          }),
+          angelCandleData(apiKey, jwtToken, {
+            exchange: "NFO",
+            symboltoken: pair.ce.token,
+            interval: "ONE_MINUTE",
+            fromdate: fromDateStr,
+            todate: toDateStr,
+          }),
+          angelCandleData(apiKey, jwtToken, {
+            exchange: "NFO",
+            symboltoken: pair.pe.token,
+            interval: "ONE_MINUTE",
+            fromdate: fromDateStr,
+            todate: toDateStr,
+          }),
+        ]);
+
+        if (indexCandles.length > 0 && ceCandles.length > 0 && peCandles.length > 0) {
+          const historicalPoints = align1mCandlesToPoints(
+            pair,
+            indexCandles,
+            ceCandles,
+            peCandles,
+            PREMIUM_DECAY_SERIES_KEY,
+          );
+
+          if (historicalPoints.length > 0) {
+            console.log(`[bot-premium-decay] Inserting ${historicalPoints.length} backfilled 1-minute points from 09:15 IST`);
+            await supabase.from("bot_premium_decay_points").insert(historicalPoints);
+            baseline = {
+              ce_ltp: historicalPoints[0].ce_ltp,
+              pe_ltp: historicalPoints[0].pe_ltp,
+              sampled_at: historicalPoints[0].sampled_at,
+            };
+          }
+        }
+      } catch (backfillErr) {
+        console.warn(`[bot-premium-decay] Auto-backfill warning: ${backfillErr}`);
+      }
     }
 
     const point = buildPremiumDecayPoint(
