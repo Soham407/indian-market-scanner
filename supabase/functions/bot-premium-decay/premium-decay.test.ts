@@ -8,6 +8,7 @@ import {
   buildPremiumDecayPoint,
   collectOptionTokens,
   indexBatchLtps,
+  parseAngelExpiry,
   PREMIUM_DECAY_BAND_SERIES_KEY,
   PREMIUM_DECAY_SERIES_KEY,
   requireBatchLtp,
@@ -30,6 +31,29 @@ function contract(
     instrumenttype: "OPTIDX",
   };
 }
+
+Deno.test("parseAngelExpiry: parses raw Angel One and ISO formats", () => {
+  assertEquals(parseAngelExpiry("02JUN2026"), "2026-06-02");
+  assertEquals(parseAngelExpiry("27AUG2026"), "2026-08-27");
+  assertEquals(parseAngelExpiry("2026-08-27"), "2026-08-27");
+  assertEquals(parseAngelExpiry("2026-12-31"), "2026-12-31");
+  assertEquals(parseAngelExpiry(""), null);
+  assertEquals(parseAngelExpiry("INVALID"), null);
+});
+
+Deno.test("selectNearestAtmOptionPair: works with ISO expiry dates from synced DB records", () => {
+  const pair = selectNearestAtmOptionPair(
+    [
+      contract("NIFTY27AUG2625000CE", "2500000", "2026-08-27"),
+      contract("NIFTY27AUG2625000PE", "2500000", "2026-08-27"),
+    ],
+    25002,
+    new Date("2026-08-21T04:45:00.000Z"),
+  );
+
+  assertEquals(pair.expiryDate, "2026-08-27");
+  assertEquals(pair.strike, 25000);
+});
 
 Deno.test("selectNearestAtmOptionPair: picks the listed nearest expiry and complete ATM pair", () => {
   const pair = selectNearestAtmOptionPair(

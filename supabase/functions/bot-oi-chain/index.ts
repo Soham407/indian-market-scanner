@@ -20,6 +20,10 @@ function parseAngelExpiry(expiry: string): string | null {
   const normalized = expiry.trim().toUpperCase();
   if (!normalized) return null;
 
+  if (/^\d{4}-\d{2}-\d{2}$/.test(normalized)) {
+    return normalized;
+  }
+
   const parsed = new Date(
     `${normalized.slice(2, 5)} ${normalized.slice(0, 2)}, ${
       normalized.slice(5)

@@ -1,4 +1,5 @@
 import { assertEquals } from "https://deno.land/std@0.224.0/assert/mod.ts";
+import { escapeHtml } from "./telegram.ts";
 
 // Test message formatting
 Deno.test("telegram message: formats entry notification correctly", () => {
@@ -94,4 +95,10 @@ Deno.test("telegram message: supports all message types", () => {
     };
     assertEquals(msg.type, type);
   }
+});
+
+Deno.test("escapeHtml: properly escapes &, <, and >", () => {
+  assertEquals(escapeHtml("M&M"), "M&amp;M");
+  assertEquals(escapeHtml("Candle < 5 min & Error > 0"), "Candle &lt; 5 min &amp; Error &gt; 0");
+  assertEquals(escapeHtml("RELIANCE"), "RELIANCE");
 });

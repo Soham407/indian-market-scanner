@@ -15,6 +15,13 @@ export interface TelegramMessage {
   message?: string;
 }
 
+export function escapeHtml(str: string): string {
+  return str
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;');
+}
+
 export async function sendTelegramNotification(
   msg: TelegramMessage,
 ): Promise<{ success: boolean; error?: string }> {
@@ -31,8 +38,9 @@ export async function sendTelegramNotification(
   switch (msg.type) {
     case 'entry': {
       const direction = msg.side === 'long' ? '📈 LONG' : '📉 SHORT';
+      const symbol = escapeHtml(msg.symbol);
       text = `
-${direction} Entry - ${msg.symbol}
+${direction} Entry - ${symbol}
 Entry: ₹${msg.entryPrice?.toFixed(2)}
 Target: ₹${msg.targetPrice?.toFixed(2)}
 Stop: ₹${msg.stopLossPrice?.toFixed(2)}
@@ -45,9 +53,11 @@ Time: ${new Date(msg.timestamp).toLocaleString('en-IN', { timeZone: 'Asia/Kolkat
 
     case 'exit': {
       const profitEmoji = (msg.netPnl ?? 0) >= 0 ? '✅' : '❌';
+      const symbol = escapeHtml(msg.symbol);
+      const exitReason = escapeHtml(msg.exitReason ?? '');
       text = `
-${profitEmoji} Exit - ${msg.symbol}
-Reason: ${msg.exitReason?.toUpperCase()}
+${profitEmoji} Exit - ${symbol}
+Reason: ${exitReason.toUpperCase()}
 Exit: ₹${msg.exitPrice?.toFixed(2)}
 Gross P&L: ₹${msg.pnl?.toFixed(2)}
 Net P&L: ₹${msg.netPnl?.toFixed(2)}
@@ -57,10 +67,11 @@ Time: ${new Date(msg.timestamp).toLocaleString('en-IN', { timeZone: 'Asia/Kolkat
     }
 
     case 'circuit_breaker': {
+      const extraMsg = msg.message ? `\n${escapeHtml(msg.message)}` : '';
       text = `
 ⛔ CIRCUIT BREAKER TRIGGERED
 Daily loss exceeded ₹3,000
-Trading is PAUSED for the day
+Trading is PAUSED for the day${extraMsg}
 Time: ${new Date(msg.timestamp).toLocaleString('en-IN', { timeZone: 'Asia/Kolkata' })}
       `.trim();
       break;
@@ -69,7 +80,7 @@ Time: ${new Date(msg.timestamp).toLocaleString('en-IN', { timeZone: 'Asia/Kolkat
     case 'heartbeat': {
       text = `
 💓 Bot Heartbeat
-Status: ${msg.message}
+Status: ${escapeHtml(msg.message ?? '')}
 Time: ${new Date(msg.timestamp).toLocaleString('en-IN', { timeZone: 'Asia/Kolkata' })}
       `.trim();
       break;
@@ -78,7 +89,7 @@ Time: ${new Date(msg.timestamp).toLocaleString('en-IN', { timeZone: 'Asia/Kolkat
     case 'error': {
       text = `
 🚨 ERROR
-${msg.message}
+${escapeHtml(msg.message ?? '')}
 Time: ${new Date(msg.timestamp).toLocaleString('en-IN', { timeZone: 'Asia/Kolkata' })}
       `.trim();
       break;

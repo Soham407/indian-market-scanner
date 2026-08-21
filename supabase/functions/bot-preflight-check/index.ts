@@ -1,10 +1,10 @@
 import { createServiceClient } from "../_shared/supabase.ts";
-import { sendTelegramNotification } from "../_shared/telegram.ts";
+import { escapeHtml, sendTelegramNotification } from "../_shared/telegram.ts";
 import { isMarketHoliday, getMarketSessionStatus } from "../_shared/market-hours.ts";
 
 const ANGEL_BASE = "https://apiconnect.angelone.in";
 
-async function checkAngelAuth(): Promise<{ ok: boolean; message: string }> {
+async function checkAngelAuth(): Promise<{ ok: boolean; message: string; jwtToken?: string }> {
   const apiKey = Deno.env.get("AngelOne_Apikey");
   const secretKey = Deno.env.get("AngelOne_SecretKey");
   const clientId = Deno.env.get("AngelOne_ClientID");
@@ -18,21 +18,31 @@ async function checkAngelAuth(): Promise<{ ok: boolean; message: string }> {
   }
 
   try {
-    // Generate TOTP
+    // Generate TOTP (supports hex and base32)
     const stripped = secretKey.replace(/[-\s]/g, "");
-    const alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZ234567";
-    const cleaned = stripped.toUpperCase().replace(/=/g, "");
-    let bits = "";
-    for (const ch of cleaned) {
-      const value = alphabet.indexOf(ch);
-      if (value === -1) {
-        return { ok: false, message: "Invalid Angel One TOTP SecretKey format" };
+    const isHex = /^[0-9a-fA-F]+$/.test(stripped) && stripped.length % 2 === 0;
+
+    let keyBytes: Uint8Array;
+    if (isHex) {
+      keyBytes = new Uint8Array(stripped.length / 2);
+      for (let i = 0; i < keyBytes.length; i++) {
+        keyBytes[i] = parseInt(stripped.slice(i * 2, i * 2 + 2), 16);
       }
-      bits += value.toString(2).padStart(5, "0");
-    }
-    const keyBytes = new Uint8Array(Math.floor(bits.length / 8));
-    for (let i = 0; i < keyBytes.length; i++) {
-      keyBytes[i] = parseInt(bits.slice(i * 8, i * 8 + 8), 2);
+    } else {
+      const alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZ234567";
+      const cleaned = stripped.toUpperCase().replace(/=/g, "");
+      let bits = "";
+      for (const ch of cleaned) {
+        const value = alphabet.indexOf(ch);
+        if (value === -1) {
+          return { ok: false, message: "Invalid Angel One TOTP SecretKey format" };
+        }
+        bits += value.toString(2).padStart(5, "0");
+      }
+      keyBytes = new Uint8Array(Math.floor(bits.length / 8));
+      for (let i = 0; i < keyBytes.length; i++) {
+        keyBytes[i] = parseInt(bits.slice(i * 8, i * 8 + 8), 2);
+      }
     }
 
     const counter = Math.floor(Date.now() / 1000 / 30);
@@ -78,7 +88,7 @@ async function checkAngelAuth(): Promise<{ ok: boolean; message: string }> {
 
     const res = await resp.json();
     if (res?.status && res?.data?.jwtToken) {
-      return { ok: true, message: "Connected & authenticated (JWT Active)" };
+      return { ok: true, message: "Connected & authenticated (JWT Active)", jwtToken: res.data.jwtToken };
     }
     return {
       ok: false,
@@ -199,6 +209,18 @@ Deno.serve(async (req) => {
     details: angelStatus.message,
   });
 
+  // Pre-warm broker session JWT in bot_settings for 09:15 AM market opening collectors
+  if (angelStatus.ok && angelStatus.jwtToken) {
+    const expiresAt = new Date(Date.now() + 18 * 3600 * 1000).toISOString();
+    await supabase
+      .from("bot_settings")
+      .update({
+        angel_jwt_token: angelStatus.jwtToken,
+        angel_jwt_expires_at: expiresAt,
+      })
+      .eq("id", 1);
+  }
+
   // Calculate Overall Status
   const hasError = checks.some((c) => c.status === "error");
   const hasWarning = checks.some((c) => c.status === "warning");
@@ -218,7 +240,7 @@ Deno.serve(async (req) => {
     "<b>System Component Checks:</b>",
     ...checks.map((c) => {
       const icon = c.status === "ok" ? "✅" : c.status === "warning" ? "⚠️" : "❌";
-      return `${icon} <b>${c.name}</b>: ${c.details}`;
+      return `${icon} <b>${escapeHtml(c.name)}</b>: ${escapeHtml(c.details)}`;
     }),
     "",
     hasError

@@ -9,6 +9,7 @@ const SCRIP_MASTER_URLS = [
 function parseAngelExpiry(expiry: string): string | null {
   const normalized = expiry.trim().toUpperCase();
   if (!normalized) return null;
+  if (/^\d{4}-\d{2}-\d{2}$/.test(normalized)) return normalized;
   const parsed = new Date(
     `${normalized.slice(2, 5)} ${normalized.slice(0, 2)}, ${normalized.slice(5)} UTC`,
   );
@@ -23,7 +24,8 @@ function normalizeStrike(strike: string): number {
 Deno.serve(async () => {
   const supabase = createServiceClient();
   const now = new Date();
-  const today = now.toISOString().slice(0, 10);
+  const session = getMarketSessionStatus(now);
+  const today = session.istDate;
 
   let rawInstruments: any[] = [];
   let lastError: unknown;
