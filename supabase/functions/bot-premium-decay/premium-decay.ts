@@ -230,6 +230,9 @@ export function buildPremiumDecayPoint(
 ) {
   const baselineCeLtp = baseline ? Number(baseline.ce_ltp) : ceLtp;
   const baselinePeLtp = baseline ? Number(baseline.pe_ltp) : peLtp;
+  const sampledMinute = new Date(
+    Math.floor(sampledAt.getTime() / 60_000) * 60_000,
+  ).toISOString();
 
   return {
     series_key: seriesKey,
@@ -237,6 +240,7 @@ export function buildPremiumDecayPoint(
     expiry_date: pair.expiryDate,
     strike: pair.strike,
     sampled_at: sampledAt.toISOString(),
+    sampled_minute: sampledMinute,
     underlying_ltp: underlyingLtp,
     ce_ltp: ceLtp,
     pe_ltp: peLtp,
@@ -279,7 +283,10 @@ export function align1mCandlesToPoints(
       baseline = { ce_ltp: ce.open, pe_ltp: pe.open };
     }
 
-    const sampleDate = new Date(timeStr);
+    const sampleDate = timeStr.includes("T") || timeStr.includes("+") || timeStr.includes("Z")
+      ? new Date(timeStr)
+      : new Date(`${timeStr.replace(" ", "T")}+05:30`);
+
     points.push(
       buildPremiumDecayPoint(
         sampleDate,
