@@ -1,5 +1,5 @@
 export interface TelegramMessage {
-  type: 'entry' | 'exit' | 'circuit_breaker' | 'heartbeat' | 'error' | 'eod_summary';
+  type: 'entry' | 'exit' | 'circuit_breaker' | 'heartbeat' | 'error' | 'eod_summary' | 'preflight';
   symbol: string;
   side?: 'long' | 'short';
   entryPrice?: number;
@@ -87,6 +87,11 @@ Time: ${new Date(msg.timestamp).toLocaleString('en-IN', { timeZone: 'Asia/Kolkat
     case 'eod_summary': {
       // Pre-formatted message passed directly through msg.message
       text = msg.message ?? '📊 EOD Summary (no data)';
+      break;
+    }
+
+    case 'preflight': {
+      text = msg.message ?? '🔍 [Options Dashboard] 9:00 AM Pre-Flight Check';
       break;
     }
   }

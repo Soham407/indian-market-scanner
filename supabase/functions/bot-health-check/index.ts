@@ -191,20 +191,15 @@ Deno.serve(async () => {
     dailyPnl = closedToday.reduce((sum, t) => sum + (t.net_pnl || 0), 0);
   }
 
-  // Send heartbeat — the cron fires every 15 min, so just always send when market is open.
-  // (Avoids the DATE-column vs TIMESTAMPTZ comparison bug with last_trading_date.)
-  const status = circuitBreakerActive
-    ? "⛔ Circuit breaker active"
-    : tradingEnabled
-      ? `✅ Trading active (${openTradesCount} open)`
-      : "🛑 Trading disabled";
-
-  await sendTelegramNotification({
-    type: "heartbeat",
-    symbol: "BOT",
-    timestamp: now.toISOString(),
-    message: `${status} | Daily P&L: ₹${dailyPnl.toFixed(0)}`,
-  });
+  // If circuit breaker is active, notify if not already notified
+  if (circuitBreakerActive) {
+    await sendTelegramNotification({
+      type: "circuit_breaker",
+      symbol: "BOT",
+      timestamp: now.toISOString(),
+      message: `⛔ Circuit breaker active | Kill switch: ${config?.kill_switch_reason ?? "Reason not specified"}`,
+    });
+  }
 
   return Response.json({
     status: "Health check complete",

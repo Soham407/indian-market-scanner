@@ -84,7 +84,7 @@ Deno.test("telegram: checks for required environment variables", () => {
 
 // Test message type variants
 Deno.test("telegram message: supports all message types", () => {
-  const types = ['entry', 'exit', 'circuit_breaker', 'heartbeat', 'error'] as const;
+  const types = ['entry', 'exit', 'circuit_breaker', 'heartbeat', 'error', 'eod_summary', 'preflight'] as const;
 
   for (const type of types) {
     const msg = {
