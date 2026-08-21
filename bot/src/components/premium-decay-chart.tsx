@@ -464,6 +464,11 @@ export function PremiumDecayChart({
             <span className="text-xs font-medium text-zinc-700">
               {loading ? "Loading…" : dataState === "waiting" ? "Awaiting market data" : live ? "Live" : "Historical"}
             </span>
+            {points[0] && (
+              <span className="rounded bg-zinc-100 px-2 py-0.5 text-[10px] font-medium text-zinc-600">
+                Baseline: {formatPremiumDecayTime(points[0].sampledAt)} @ {points[0].strike.toLocaleString("en-IN")}
+              </span>
+            )}
             {latest && (
               <span className="text-xs font-medium text-zinc-700">· {formatPremiumDecayTime(latest.sampledAt)}</span>
             )}

@@ -139,18 +139,68 @@ async function login(apiKey: string, clientId: string, pin: string, totp: string
   return data.data.jwtToken as string;
 }
 
-async function authenticate(): Promise<{ apiKey: string; jwtToken: string }> {
+async function authenticate(
+  supabase?: ReturnType<typeof createServiceClient>,
+): Promise<{ apiKey: string; jwtToken: string }> {
   const apiKey = Deno.env.get("AngelOne_Apikey");
   const secretKey = Deno.env.get("AngelOne_SecretKey");
   const clientId = Deno.env.get("AngelOne_ClientID");
   const pin = Deno.env.get("AngelOne_PIN");
   if (!apiKey || !secretKey || !clientId || !pin) throw new Error("Missing Angel One secrets");
-  return { apiKey, jwtToken: await login(apiKey, clientId, pin, await generateTotp(secretKey)) };
+
+  if (supabase) {
+    const { data: settings } = await supabase
+      .from("bot_settings")
+      .select("angel_jwt_token, angel_jwt_expires_at")
+      .eq("id", 1)
+      .maybeSingle();
+
+    if (
+      settings?.angel_jwt_token &&
+      settings.angel_jwt_expires_at &&
+      new Date(settings.angel_jwt_expires_at).getTime() > Date.now() + 5 * 60_000
+    ) {
+      return { apiKey, jwtToken: settings.angel_jwt_token };
+    }
+  }
+
+  const jwtToken = await login(apiKey, clientId, pin, await generateTotp(secretKey));
+  if (supabase) {
+    const expiresAt = new Date(Date.now() + 18 * 3600 * 1000).toISOString();
+    await supabase
+      .from("bot_settings")
+      .update({
+        angel_jwt_token: jwtToken,
+        angel_jwt_expires_at: expiresAt,
+      })
+      .eq("id", 1);
+  }
+
+  return { apiKey, jwtToken };
 }
 
 import niftyScripFallback from "../_shared/nifty_scrip_cache.json" with { type: "json" };
 
-async function getScripMaster(): Promise<ScripEntry[]> {
+async function getScripMaster(supabase?: ReturnType<typeof createServiceClient>): Promise<ScripEntry[]> {
+  if (supabase) {
+    const { data: dbInstruments } = await supabase
+      .from("bot_active_instruments")
+      .select("token, symbol, strike, option_type, expiry_date, exch_seg, instrument_type")
+      .eq("name", "NIFTY");
+
+    if (Array.isArray(dbInstruments) && dbInstruments.length > 50) {
+      return dbInstruments.map((d) => ({
+        token: d.token,
+        symbol: d.symbol,
+        strike: String(Number(d.strike) * 100),
+        optiontype: d.option_type,
+        expiry: d.expiry_date,
+        exch_seg: "NFO",
+        instrumenttype: "OPTIDX",
+      }));
+    }
+  }
+
   if (cachedScrip && Date.now() - cachedScripAt < SCRIP_CACHE_MS) return cachedScrip;
 
   let lastError: unknown;
@@ -222,15 +272,13 @@ Deno.serve(async () => {
 
   try {
     const supabase = createServiceClient();
-    const { apiKey, jwtToken } = await authenticate();
+    const { apiKey, jwtToken } = await authenticate(supabase);
 
     // Fetch NIFTY spot price
     const underlyingLtp = await fetchNiftyLtp(apiKey, jwtToken);
 
-    // Get all NIFTY weekly option tokens from scrip master.
-    // Use nearest-upcoming-expiry approach (same as bot-premium-decay) so we're
-    // not sensitive to the exact string format the scrip master uses for dates.
-    const scripMaster = await getScripMaster();
+    // Get all NIFTY weekly option tokens from scrip master or active instruments table.
+    const scripMaster = await getScripMaster(supabase);
     const today = sampledAt.toISOString().slice(0, 10);
 
     const allNiftyOptions = scripMaster.filter(

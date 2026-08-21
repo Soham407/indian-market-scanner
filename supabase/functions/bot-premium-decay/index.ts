@@ -343,7 +343,9 @@ async function reportCollectorFailure(error: unknown): Promise<void> {
   }
 }
 
-async function authenticate(): Promise<{ apiKey: string; jwtToken: string }> {
+async function authenticate(
+  supabase?: ReturnType<typeof createServiceClient>,
+): Promise<{ apiKey: string; jwtToken: string }> {
   const apiKey = Deno.env.get("AngelOne_Apikey");
   const secretKey = Deno.env.get("AngelOne_SecretKey");
   const clientId = Deno.env.get("AngelOne_ClientID");
@@ -353,15 +355,44 @@ async function authenticate(): Promise<{ apiKey: string; jwtToken: string }> {
       "Missing Supabase secrets: AngelOne_Apikey, AngelOne_SecretKey, AngelOne_ClientID, AngelOne_PIN",
     );
   }
-  return {
+
+  // Check cached JWT in database to prevent broker rate-limiting on loginByPassword
+  if (supabase) {
+    const { data: settings } = await supabase
+      .from("bot_settings")
+      .select("angel_jwt_token, angel_jwt_expires_at")
+      .eq("id", 1)
+      .maybeSingle();
+
+    if (
+      settings?.angel_jwt_token &&
+      settings.angel_jwt_expires_at &&
+      new Date(settings.angel_jwt_expires_at).getTime() > Date.now() + 5 * 60_000
+    ) {
+      return { apiKey, jwtToken: settings.angel_jwt_token };
+    }
+  }
+
+  const jwtToken = await angelLogin(
     apiKey,
-    jwtToken: await angelLogin(
-      apiKey,
-      clientId,
-      pin,
-      await generateTotp(secretKey),
-    ),
-  };
+    clientId,
+    pin,
+    await generateTotp(secretKey),
+  );
+
+  // Cache JWT token in bot_settings with 18-hour validity
+  if (supabase) {
+    const expiresAt = new Date(Date.now() + 18 * 3600 * 1000).toISOString();
+    await supabase
+      .from("bot_settings")
+      .update({
+        angel_jwt_token: jwtToken,
+        angel_jwt_expires_at: expiresAt,
+      })
+      .eq("id", 1);
+  }
+
+  return { apiKey, jwtToken };
 }
 
 Deno.serve(async () => {
@@ -371,7 +402,7 @@ Deno.serve(async () => {
 
   try {
     const supabase = createServiceClient();
-    const { apiKey, jwtToken } = await authenticate();
+    const { apiKey, jwtToken } = await authenticate(supabase);
     const underlyingLtp = await angelLtp(
       apiKey,
       jwtToken,
@@ -380,7 +411,26 @@ Deno.serve(async () => {
       NIFTY_INDEX.symbolToken,
     );
 
-    const scripMaster = await getScripMaster();
+    // Prefer dynamically synced instruments from database table if present
+    let scripMaster: AngelInstrument[] = [];
+    const { data: dbInstruments } = await supabase
+      .from("bot_active_instruments")
+      .select("token, symbol, name, expiry_date, strike, option_type, exch_seg, instrument_type")
+      .eq("name", "NIFTY");
+
+    if (Array.isArray(dbInstruments) && dbInstruments.length > 50) {
+      scripMaster = dbInstruments.map((d) => ({
+        token: d.token,
+        symbol: d.symbol,
+        name: d.name,
+        expiry: d.expiry_date,
+        strike: String(Number(d.strike) * 100),
+        exch_seg: "NFO",
+        instrumenttype: "OPTIDX",
+      }));
+    } else {
+      scripMaster = await getScripMaster();
+    }
 
     const pair = selectNearestAtmOptionPair(
       scripMaster,
@@ -413,17 +463,14 @@ Deno.serve(async () => {
       .order("sampled_at", { ascending: true })
       .limit(1)
       .maybeSingle();
-    if (baselineError) {
-      throw new Error(
-        `Could not read premium decay baseline: ${baselineError.message}`,
-      );
-    }
+    const morningCutoff = `${session.istDate}T03:50:00.000Z`; // 09:20 IST
+    const isLateBaseline = baseline && baseline.sampled_at > morningCutoff;
 
-    // Auto-Backfill: If no baseline exists for today's session or if the first sample is late,
+    // Auto-Backfill: If no baseline exists or the first sample started late (e.g. after 09:20 IST),
     // fetch 1-minute historical candles from 09:15 AM IST to now.
-    if (!baseline && session.isOpen) {
+    if ((!baseline || isLateBaseline) && session.isOpen) {
       try {
-        console.log(`[bot-premium-decay] No morning baseline found. Running 1-minute candle backfill from 09:15 IST...`);
+        console.log(`[bot-premium-decay] Missing or late morning baseline (isLate: ${isLateBaseline}). Running 1-minute candle backfill from 09:15 IST...`);
         const fromDateStr = `${session.istDate} 09:15`;
         const toDateStr = `${session.istDate} ${new Date(sampledAt.getTime() + 5.5 * 3600 * 1000).toISOString().slice(11, 16)}`;
 
@@ -462,7 +509,16 @@ Deno.serve(async () => {
 
           if (historicalPoints.length > 0) {
             console.log(`[bot-premium-decay] Inserting ${historicalPoints.length} backfilled 1-minute points from 09:15 IST`);
-            await supabase.from("bot_premium_decay_points").insert(historicalPoints);
+            // Insert in batches of 50
+            for (let i = 0; i < historicalPoints.length; i += 50) {
+              const chunk = historicalPoints.slice(i, i + 50);
+              const { error: insertErr } = await supabase
+                .from("bot_premium_decay_points")
+                .insert(chunk);
+              if (insertErr) {
+                console.warn(`[bot-premium-decay] Backfill chunk insert error: ${insertErr.message}`);
+              }
+            }
             baseline = {
               ce_ltp: historicalPoints[0].ce_ltp,
               pe_ltp: historicalPoints[0].pe_ltp,
