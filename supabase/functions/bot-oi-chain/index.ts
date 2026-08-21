@@ -9,10 +9,24 @@ const NIFTY_TOKEN = "99926000";
 const NIFTY_EXCHANGE = "NSE";
 const NIFTY_SYMBOL = "Nifty 50";
 const NFO_EXCHANGE = "NFO";
-const SCRIP_MASTER_URL =
-  "https://margincalculator.angelbroking.com/OpenAPI_File/files/OpenAPIScripMaster.json";
+const SCRIP_MASTER_URLS = [
+  "https://margincalculator.angelone.in/OpenAPI_File/files/OpenAPIScripMaster.json",
+  "https://margincalculator.angelbroking.com/OpenAPI_File/files/OpenAPIScripMaster.json",
+];
 const SCRIP_CACHE_MS = 6 * 3600 * 1000;
 const BATCH_SIZE = 50;
+
+function parseAngelExpiry(expiry: string): string | null {
+  const normalized = expiry.trim().toUpperCase();
+  if (!normalized) return null;
+
+  const parsed = new Date(
+    `${normalized.slice(2, 5)} ${normalized.slice(0, 2)}, ${
+      normalized.slice(5)
+    } UTC`,
+  );
+  return Number.isNaN(parsed.getTime()) ? null : parsed.toISOString().slice(0, 10);
+}
 
 type ScripEntry = {
   token: string;
@@ -20,7 +34,7 @@ type ScripEntry = {
   exch_seg: string;
   instrumenttype: string;
   strike: string;
-  optiontype: string;
+  optiontype?: string;
   expiry: string;
 };
 
@@ -92,7 +106,7 @@ async function generateTotp(secret: string): Promise<string> {
   const msg = new Uint8Array(8);
   let c = counter;
   for (let i = 7; i >= 0; i--) { msg[i] = c & 0xff; c = Math.floor(c / 256); }
-  const key = await crypto.subtle.importKey("raw", keyBytes, { name: "HMAC", hash: "SHA-1" }, false, ["sign"]);
+  const key = await crypto.subtle.importKey("raw", keyBytes.buffer as ArrayBuffer, { name: "HMAC", hash: "SHA-1" }, false, ["sign"]);
   const mac = new Uint8Array(await crypto.subtle.sign("HMAC", key, msg));
   const offset = mac[19] & 0x0f;
   const code = ((mac[offset] & 0x7f) << 24) | ((mac[offset + 1] & 0xff) << 16) |
@@ -134,13 +148,33 @@ async function authenticate(): Promise<{ apiKey: string; jwtToken: string }> {
   return { apiKey, jwtToken: await login(apiKey, clientId, pin, await generateTotp(secretKey)) };
 }
 
+import niftyScripFallback from "../_shared/nifty_scrip_cache.json" with { type: "json" };
+
 async function getScripMaster(): Promise<ScripEntry[]> {
   if (cachedScrip && Date.now() - cachedScripAt < SCRIP_CACHE_MS) return cachedScrip;
-  const resp = await fetch(SCRIP_MASTER_URL);
-  if (!resp.ok) throw new Error(`Scrip master failed: ${resp.status}`);
-  cachedScrip = await resp.json() as ScripEntry[];
-  cachedScripAt = Date.now();
-  return cachedScrip;
+
+  let lastError: unknown;
+  for (const url of SCRIP_MASTER_URLS) {
+    try {
+      const resp = await fetch(url, { signal: AbortSignal.timeout(8_000) });
+      if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+      cachedScrip = await resp.json() as ScripEntry[];
+      cachedScripAt = Date.now();
+      return cachedScrip;
+    } catch (err) {
+      lastError = err;
+    }
+  }
+
+  // If live download of 37MB times out or fails, use bundled fallback NIFTY contracts
+  if (Array.isArray(niftyScripFallback) && niftyScripFallback.length > 0) {
+    console.warn(`[bot-oi-chain] Remote download failed (${lastError}), using bundled NIFTY scrip master (${niftyScripFallback.length} contracts)`);
+    cachedScrip = niftyScripFallback as ScripEntry[];
+    cachedScripAt = Date.now();
+    return cachedScrip;
+  }
+
+  throw new Error(`Scrip master failed: ${lastError instanceof Error ? lastError.message : String(lastError)}`);
 }
 
 async function fetchNiftyLtp(apiKey: string, jwt: string): Promise<number> {
@@ -197,7 +231,7 @@ Deno.serve(async () => {
     // Use nearest-upcoming-expiry approach (same as bot-premium-decay) so we're
     // not sensitive to the exact string format the scrip master uses for dates.
     const scripMaster = await getScripMaster();
-    const nowIst = new Date(sampledAt.getTime() + 5.5 * 3600 * 1000);
+    const today = sampledAt.toISOString().slice(0, 10);
 
     const allNiftyOptions = scripMaster.filter(
       (e) => e.exch_seg === "NFO" &&
@@ -207,25 +241,25 @@ Deno.serve(async () => {
     );
 
     // Find the nearest upcoming expiry
-    const expiryDates = new Map<string, Date>();
+    const expiryDates = new Map<string, string>();
     for (const e of allNiftyOptions) {
       if (expiryDates.has(e.expiry)) continue;
-      const d = new Date(e.expiry);
-      if (Number.isFinite(d.getTime()) && d > nowIst) expiryDates.set(e.expiry, d);
+      const iso = parseAngelExpiry(e.expiry);
+      if (iso && iso >= today) {
+        expiryDates.set(e.expiry, iso);
+      }
     }
-    const sorted = Array.from(expiryDates.entries()).sort((a, b) => a[1].getTime() - b[1].getTime());
+    const sorted = Array.from(expiryDates.entries()).sort((a, b) => a[1].localeCompare(b[1]));
     if (sorted.length === 0) {
       return Response.json({ ok: false, error: "No upcoming NIFTY option expiries in scrip master" }, { status: 200 });
     }
-    const [nearestExpiryStr, nearestExpiryDate] = sorted[0];
+    const [nearestExpiryStr, expiryDateIso] = sorted[0];
     const expiry = nextWeeklyExpiry(sampledAt); // for logging only
     const optionTokens = allNiftyOptions.filter((e) => e.expiry === nearestExpiryStr);
 
     if (optionTokens.length === 0) {
       return Response.json({ ok: false, error: `No NIFTY option tokens for nearest expiry ${nearestExpiryStr}` }, { status: 200 });
     }
-
-    const expiryDateIso = nearestExpiryDate.toISOString().slice(0, 10);
 
     // Batch-fetch FULL quotes (includes opnInterest)
     const tokens = optionTokens.map((e) => e.token);

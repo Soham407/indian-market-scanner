@@ -18,8 +18,10 @@ import {
 } from "./premium-decay.ts";
 
 const ANGEL_BASE = "https://apiconnect.angelone.in";
-const SCRIP_MASTER_URL =
-  "https://margincalculator.angelbroking.com/OpenAPI_File/files/OpenAPIScripMaster.json";
+const SCRIP_MASTER_URLS = [
+  "https://margincalculator.angelone.in/OpenAPI_File/files/OpenAPIScripMaster.json",
+  "https://margincalculator.angelbroking.com/OpenAPI_File/files/OpenAPIScripMaster.json",
+];
 const NIFTY_INDEX = {
   exchange: "NSE",
   tradingSymbol: "Nifty 50",
@@ -233,6 +235,8 @@ async function angelBatchLtps(
   );
 }
 
+import niftyScripFallback from "../_shared/nifty_scrip_cache.json" with { type: "json" };
+
 async function getScripMaster(): Promise<AngelInstrument[]> {
   if (
     cachedScripMaster &&
@@ -241,13 +245,34 @@ async function getScripMaster(): Promise<AngelInstrument[]> {
     return cachedScripMaster;
   }
 
-  const response = await fetch(SCRIP_MASTER_URL);
-  if (!response.ok) {
-    throw new Error(`Angel One scrip master failed: HTTP ${response.status}`);
+  let lastError: unknown;
+  for (const url of SCRIP_MASTER_URLS) {
+    try {
+      const response = await fetch(url, { signal: AbortSignal.timeout(8_000) });
+      if (!response.ok) {
+        throw new Error(`HTTP ${response.status}`);
+      }
+      cachedScripMaster = await response.json() as AngelInstrument[];
+      cachedScripMasterAt = Date.now();
+      return cachedScripMaster;
+    } catch (err) {
+      lastError = err;
+    }
   }
-  cachedScripMaster = await response.json() as AngelInstrument[];
-  cachedScripMasterAt = Date.now();
-  return cachedScripMaster;
+
+  // If live download of 37MB times out or fails, use bundled fallback NIFTY contracts
+  if (Array.isArray(niftyScripFallback) && niftyScripFallback.length > 0) {
+    console.warn(`[bot-premium-decay] Remote download failed (${lastError}), using bundled NIFTY scrip master (${niftyScripFallback.length} contracts)`);
+    cachedScripMaster = niftyScripFallback as AngelInstrument[];
+    cachedScripMasterAt = Date.now();
+    return cachedScripMaster;
+  }
+
+  throw new Error(
+    `Angel One scrip master failed: ${
+      lastError instanceof Error ? lastError.message : String(lastError)
+    }`,
+  );
 }
 
 async function reportCollectorFailure(error: unknown): Promise<void> {
