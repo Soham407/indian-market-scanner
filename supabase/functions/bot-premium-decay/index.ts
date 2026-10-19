@@ -416,7 +416,13 @@ Deno.serve(async () => {
     const { data: dbInstruments } = await supabase
       .from("bot_active_instruments")
       .select("token, symbol, name, expiry_date, strike, option_type, exch_seg, instrument_type")
-      .eq("name", "NIFTY");
+      .eq("name", "NIFTY")
+      // PostgREST returns max 1000 rows; the table holds ~3.5k (expired rows are never deleted).
+      // Unfiltered, an arbitrary subset came back -> wrong expiry / missing ATM strikes.
+      // Filter + sort so the nearest expiry is always complete inside the first 1000 rows.
+      .gte("expiry_date", session.istDate)
+      .order("expiry_date", { ascending: true })
+      .order("strike", { ascending: true });
 
     if (Array.isArray(dbInstruments) && dbInstruments.length > 50) {
       scripMaster = dbInstruments.map((d) => ({
