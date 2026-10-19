@@ -211,14 +211,21 @@ export function BandAverageChart({ sessionDate, live, showSpot, showOiOverlay, o
     const supabase = getBrowserSupabaseClient();
 
     const fetchOi = async () => {
-      const { data } = await supabase
-        .from("bot_nifty_oi_chain")
-        .select("sampled_at, ce_oi, pe_oi")
-        .eq("session_date", sessionDate)
-        .order("sampled_at", { ascending: true })
-        .limit(10000);
-
-      if (!isActive || !data) return;
+      // PostgREST caps each response at 1000 rows; a full session is ~75 samples x ~100 strikes,
+      // so a single .limit(10000) silently returned only the first ~2.5h. Page until exhausted.
+      const data: { sampled_at: string; ce_oi: number; pe_oi: number }[] = [];
+      for (let from = 0; ; from += 1000) {
+        const { data: page } = await supabase
+          .from("bot_nifty_oi_chain")
+          .select("sampled_at, ce_oi, pe_oi")
+          .eq("session_date", sessionDate)
+          .order("sampled_at", { ascending: true })
+          .order("id", { ascending: true })
+          .range(from, from + 999);
+        if (!isActive || !page) return;
+        data.push(...page);
+        if (page.length < 1000) break;
+      }
 
       const totals = new Map<string, { ceOi: number; peOi: number }>();
       for (const row of data as { sampled_at: string; ce_oi: number; pe_oi: number }[]) {

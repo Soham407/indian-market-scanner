@@ -185,13 +185,22 @@ async function authenticate(
 
 import niftyScripFallback from "../_shared/nifty_scrip_cache.json" with { type: "json" };
 
-async function getScripMaster(supabase?: ReturnType<typeof createServiceClient>): Promise<ScripEntry[]> {
-  if (supabase) {
-    const { data: dbInstruments } = await supabase
+async function getScripMaster(supabase?: ReturnType<typeof createServiceClient>, istDate?: string): Promise<ScripEntry[]> {
+  if (supabase && istDate) {
+    const { data: dbInstruments, error: dbError } = await supabase
       .from("bot_active_instruments")
-      .select("token, symbol, strike, option_type, expiry_date, exch_seg, instrument_type")
-      .eq("name", "NIFTY");
+      // No exch_seg column exists (it's "exchange"); selecting it made this query always fail
+      // and silently fall back to the stale bundled scrip (monthly 27-Oct expiry only).
+      .select("token, symbol, strike, option_type, expiry_date")
+      .eq("name", "NIFTY")
+      // PostgREST returns max 1000 rows; the table holds ~3.5k (expired rows are never deleted).
+      // Unfiltered, an arbitrary subset came back -> wrong expiry / partial chain.
+      // Filter + sort so the nearest expiry is always complete inside the first 1000 rows.
+      .gte("expiry_date", istDate)
+      .order("expiry_date", { ascending: true })
+      .order("strike", { ascending: true });
 
+    if (dbError) console.error(`[bot-oi-chain] bot_active_instruments query failed: ${dbError.message}`);
     if (Array.isArray(dbInstruments) && dbInstruments.length > 50) {
       return dbInstruments.map((d) => ({
         token: d.token,
@@ -282,7 +291,7 @@ Deno.serve(async () => {
     const underlyingLtp = await fetchNiftyLtp(apiKey, jwtToken);
 
     // Get all NIFTY weekly option tokens from scrip master or active instruments table.
-    const scripMaster = await getScripMaster(supabase);
+    const scripMaster = await getScripMaster(supabase, istDateKey(sampledAt));
     const today = sampledAt.toISOString().slice(0, 10);
 
     const allNiftyOptions = scripMaster.filter(

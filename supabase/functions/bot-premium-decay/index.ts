@@ -413,11 +413,20 @@ Deno.serve(async () => {
 
     // Prefer dynamically synced instruments from database table if present
     let scripMaster: AngelInstrument[] = [];
-    const { data: dbInstruments } = await supabase
+    const { data: dbInstruments, error: dbError } = await supabase
       .from("bot_active_instruments")
-      .select("token, symbol, name, expiry_date, strike, option_type, exch_seg, instrument_type")
-      .eq("name", "NIFTY");
+      // No exch_seg column exists (it's "exchange"); selecting it made this query always fail
+      // and silently fall back to the stale bundled scrip (monthly 27-Oct expiry only).
+      .select("token, symbol, name, expiry_date, strike, option_type")
+      .eq("name", "NIFTY")
+      // PostgREST returns max 1000 rows; the table holds ~3.5k (expired rows are never deleted).
+      // Unfiltered, an arbitrary subset came back -> wrong expiry / missing ATM strikes.
+      // Filter + sort so the nearest expiry is always complete inside the first 1000 rows.
+      .gte("expiry_date", session.istDate)
+      .order("expiry_date", { ascending: true })
+      .order("strike", { ascending: true });
 
+    if (dbError) console.error(`[bot-premium-decay] bot_active_instruments query failed: ${dbError.message}`);
     if (Array.isArray(dbInstruments) && dbInstruments.length > 50) {
       scripMaster = dbInstruments.map((d) => ({
         token: d.token,
