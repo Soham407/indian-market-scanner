@@ -93,8 +93,15 @@ Deno.serve(async () => {
     if (!error) upserted += chunk.length;
   }
 
+  // Expired contracts were never removed and grew the table past PostgREST's 1000-row cap.
+  const { count: pruned, error: pruneError } = await supabase
+    .from("bot_active_instruments")
+    .delete({ count: "exact" })
+    .lt("expiry_date", today);
+  if (pruneError) console.error(`[bot-sync-instruments] prune failed: ${pruneError.message}`);
+
   return new Response(
-    JSON.stringify({ ok: true, activeContractsCount: activeNifty.length, upsertedCount: upserted }),
+    JSON.stringify({ ok: true, activeContractsCount: activeNifty.length, upsertedCount: upserted, prunedCount: pruned ?? 0 }),
     { status: 200, headers: { "Content-Type": "application/json" } },
   );
 });
